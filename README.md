@@ -34,9 +34,11 @@
 
 ## 在本机试用
 
-需要 Node.js **24.14.1**、pnpm **10.34.5**、Docker 与 Docker Compose **2.24+**。Windows 请使用 Docker Desktop 的 Linux 容器模式。以下命令均在源码根目录执行；首次安装需要访问 npm 与容器镜像仓库。
+需要 Node.js **24.14.1**、pnpm **10.34.5**、Docker 与 Docker Compose **2.24+**。Windows 请使用 Docker Desktop 的 Linux 容器模式。先用 Git 获取源码；也可在 GitHub 的 Code 菜单下载 ZIP，解压后从 `corepack enable` 开始执行。首次安装需要访问 npm 与容器镜像仓库。
 
 ```sh
+git clone https://github.com/glgust/association-portal.git
+cd association-portal
 corepack enable
 corepack prepare pnpm@10.34.5 --activate
 pnpm install --frozen-lockfile

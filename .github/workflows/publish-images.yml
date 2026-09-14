@@ -3,12 +3,18 @@ name: Publish application images
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing published release tag to build
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-images-${{ github.event.release.tag_name }}
+  group: publish-images-${{ inputs.release_tag || github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
@@ -16,6 +22,9 @@ jobs:
     name: Validate release
     runs-on: ubuntu-24.04
     outputs:
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      release_url: ${{ steps.release.outputs.release_url }}
+      published_at: ${{ steps.release.outputs.published_at }}
       image_owner: ${{ steps.release.outputs.image_owner }}
       revision: ${{ steps.release.outputs.revision }}
       version: ${{ steps.release.outputs.version }}
@@ -25,18 +34,21 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag || github.event.release.tag_name }}
 
       - name: Validate the release tag and source branch
         id: release
         shell: bash
         env:
-          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          GH_TOKEN: ${{ github.token }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          jq -e '.draft == false' <<< "$release_json" >/dev/null
+          IS_PRERELEASE=$(jq -r .prerelease <<< "$release_json")
           if [[ "$RELEASE_TAG" == v1.0.0 && "$IS_PRERELEASE" != true ]]; then
             echo '::error::v1.0.0 is the first test release and must be marked as a prerelease.'
             exit 1
@@ -56,6 +68,9 @@ jobs:
             echo "image_owner=${REPOSITORY_OWNER,,}"
             echo "revision=$(git rev-parse HEAD)"
             echo "version=$RELEASE_TAG"
+            echo "prerelease=$IS_PRERELEASE"
+            echo "release_url=$(jq -r .html_url <<< "$release_json")"
+            echo "published_at=$(jq -r .published_at <<< "$release_json")"
           } >> "$GITHUB_OUTPUT"
 
   verify:
@@ -67,7 +82,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag || github.event.release.tag_name }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -96,7 +111,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag || github.event.release.tag_name }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -131,7 +146,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.release_tag || github.event.release.tag_name }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -156,11 +171,11 @@ jobs:
             type=raw,value=${{ needs.prepare.outputs.version }}
             type=raw,value=sha-${{ needs.prepare.outputs.revision }}
           labels: |
-            org.opencontainers.image.title=ASCNUCC ${{ matrix.component }}
-            org.opencontainers.image.description=ASCNUCC ${{ matrix.component }} application image
+            org.opencontainers.image.title=Association Portal ${{ matrix.component }}
+            org.opencontainers.image.description=Association Portal ${{ matrix.component }} application image
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.url=${{ github.event.release.html_url }}
-            org.opencontainers.image.created=${{ github.event.release.published_at }}
+            org.opencontainers.image.url=${{ needs.prepare.outputs.release_url }}
+            org.opencontainers.image.created=${{ needs.prepare.outputs.published_at }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.revision=${{ needs.prepare.outputs.revision }}
             io.ascnucc.component=${{ matrix.component }}
@@ -188,7 +203,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           {
-            echo "### ASCNUCC $COMPONENT"
+            echo "### Association Portal $COMPONENT"
             echo
             echo "- Image: \`ghcr.io/$IMAGE_OWNER/association-portal-$COMPONENT:$VERSION\`"
             echo "- Digest: \`$DIGEST\`"
@@ -197,7 +212,7 @@ jobs:
   promote-stable:
     name: Promote current latest stable release
     needs: [prepare, publish]
-    if: ${{ !github.event.release.prerelease }}
+    if: needs.prepare.outputs.prerelease == 'false'
     runs-on: ubuntu-24.04
     permissions:
       contents: read

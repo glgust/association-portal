@@ -11,6 +11,12 @@
 
 ## 独立仓库和 Release
 
+本项目的公开仓库为 `glgust/association-portal`。向其 `main` 推送后，**Source and workflow checks** 会执行源码检查、真实测试数据库迁移、E2E seed、构建与浏览器流程。全部通过后，首次发布作业才会为该次已验证提交创建 `v1.0.0` prerelease，并启动镜像构建。该自动发布仅限本仓库，fork 不会自动发布；已存在的版本标签不会移动或覆盖。
+
+若镜像作业失败，修复构建环境后可在 **Publish application images → Run workflow** 填写已有发布标签重跑。该入口从 GitHub Release 读取测试版标记，`v1.0.0` 不会进入 stable 频道。
+
+以下脚本用于从源码包创建另一个全新仓库；已有本公开仓库的维护者无需再执行：
+
 若使用不含 Git 历史的源码压缩包，先确认本目录文件清单，再建立首次提交：
 
 ```sh
