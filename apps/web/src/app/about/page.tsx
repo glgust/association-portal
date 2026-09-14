@@ -13,6 +13,8 @@ import {
 
 const siteDescription = '了解示例协会。'
 
+export const dynamic = 'force-dynamic'
+
 export async function generateMetadata(): Promise<Metadata> {
   try {
     const page = await getPublicAboutPage()

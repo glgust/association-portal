@@ -12,7 +12,12 @@ test('public announcements show a controlled unavailable state', async ({
   await expect(
     page.getByRole('heading', { name: '暂时无法载入公告' }),
   ).toBeVisible()
+  await expect(page.getByText('请稍后刷新重试。')).toBeVisible()
+  await expect(page.getByText(/^请求编号：/)).toBeVisible()
+
+  await page.goto('/announcements/fictional-unavailable-announcement')
   await expect(
-    page.getByText('公告服务暂时无法连接，请稍后再试。'),
+    page.getByRole('heading', { name: '暂时无法载入公告' }),
   ).toBeVisible()
+  await expect(page.getByText(/^请求编号：/)).toBeVisible()
 })

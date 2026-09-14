@@ -14,6 +14,8 @@ import { ContactDirectory } from './ContactDirectory'
 
 const siteDescription = '查看示例协会公开的联系方式。'
 
+export const dynamic = 'force-dynamic'
+
 export async function generateMetadata(): Promise<Metadata> {
   try {
     const page = await getPublicContactPage()
