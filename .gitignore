@@ -1,0 +1,21 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+CLAUDE.local.md
+.next
+coverage
+node_modules
+.pnpm-store
+playwright-report
+test-results
+*.log
+*.tsbuildinfo
+
+# Local deployment configuration, credentials, state, and locks
+.ascnucc/
+
+# Local PostgreSQL data or exports
+.data
+*.dump
+*.sql.gz

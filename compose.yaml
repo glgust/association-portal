@@ -1,0 +1,56 @@
+name: association-portal-test
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-06-13T11-33-47Z@sha256:064117214caceaa8d8a90ef7caa58f2b2aeb316b5156afe9ee8da5b4d83e12c8
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ascnucc-media-integration
+      MINIO_ROOT_PASSWORD: local-integration-secret-not-for-production
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:9000/minio/health/live']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - '127.0.0.1:19000:9000'
+      - '127.0.0.1:19001:9001'
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-05-21T01-59-54Z@sha256:09f93f534cde415d192bb6084dd0e0ddd1715fb602f8a922ad121fd2bf0f8b44
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ascnucc-media-integration
+      MINIO_ROOT_PASSWORD: local-integration-secret-not-for-production
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - >-
+        mc alias set integration http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}";
+        mc mb --ignore-existing integration/ascnucc-media-integration;
+        mc anonymous set none integration/ascnucc-media-integration
+
+  postgres:
+    image: postgres:17.11-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4
+    environment:
+      POSTGRES_DB: ascnucc_demo_dev
+      POSTGRES_PASSWORD: ascnucc_demo
+      POSTGRES_USER: ascnucc_demo
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ascnucc_demo -d ascnucc_demo_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  minio_data:
+  postgres_data:

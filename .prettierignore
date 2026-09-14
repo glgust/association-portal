@@ -1,0 +1,8 @@
+.next
+**/next-env.d.ts
+node_modules
+pnpm-lock.yaml
+apps/cms/src/payload-types.ts
+# Payload-generated import map and immutable generated migration snapshots.
+apps/cms/src/app/(payload)/admin/importMap.js
+apps/cms/src/migrations/*.json

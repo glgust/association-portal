@@ -1,0 +1,32 @@
+.page {
+  max-width: 52rem;
+  padding: 2rem;
+}
+
+.page p {
+  line-height: 1.7;
+}
+
+.form {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-block: 2rem;
+}
+
+.form input,
+.form button {
+  font: inherit;
+}
+
+.form button {
+  cursor: pointer;
+  padding: 0.7rem 1rem;
+}
+
+.form button:focus-visible,
+.form input:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 3px;
+}

@@ -1,0 +1,48 @@
+name: Source and workflow checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17.11-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4
+        env:
+          POSTGRES_USER: ascnucc_demo
+          POSTGRES_PASSWORD: ascnucc_demo
+          POSTGRES_DB: ascnucc_demo_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U ascnucc_demo -d ascnucc_demo_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgres://ascnucc_demo:ascnucc_demo@127.0.0.1:5432/ascnucc_demo_test
+      PAYLOAD_SECRET: fictional-ci-secret-not-for-deployment-32-characters
+      MEDIA_STORAGE_MODE: local
+      MEDIA_LOCAL_ROOT: /tmp/ascnucc-media-e2e
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24.14.1'
+      - run: corepack enable && corepack prepare pnpm@10.34.5 --activate
+      - run: pnpm install --frozen-lockfile
+      - run: mkdir -p "$MEDIA_LOCAL_ROOT"
+      - run: pnpm check
+      - run: sh scripts/verify-deploy-tool.sh
+      - run: pnpm --dir apps/cms migrate
+      - run: pnpm --dir apps/cms seed:e2e
+      - run: pnpm build
+      - run: pnpm --dir apps/cms exec playwright install --with-deps chromium
+      - run: pnpm --dir apps/cms test:e2e

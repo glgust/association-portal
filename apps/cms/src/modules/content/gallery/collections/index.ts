@@ -1,0 +1,1 @@
+export { GalleryWorks } from './GalleryWorks'

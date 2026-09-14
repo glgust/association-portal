@@ -1,0 +1,87 @@
+import type { CollectionConfig } from 'payload'
+
+import { denyAll } from '@/access/deny-all'
+import { canReadAuditEvent } from '@/modules/audit/access'
+import { allowsAuditOperation, auditOperations } from '@/modules/audit/context'
+
+export const AuditEvents: CollectionConfig = {
+  slug: 'audit-events',
+  admin: {
+    description: '只读的关键业务操作审计记录。',
+    group: '系统与审计',
+  },
+  labels: { plural: '审计记录', singular: '审计记录' },
+  access: {
+    create: allowsAuditOperation(
+      auditOperations.activateAccount,
+      auditOperations.changeOwnPassword,
+      auditOperations.createAccount,
+      auditOperations.disableAccount,
+      auditOperations.manageAccount,
+      auditOperations.resetAccount,
+      auditOperations.reissueTemporaryCredential,
+      auditOperations.setPermissionOverride,
+      auditOperations.updateOwnDisplayName,
+      auditOperations.approveAccountClaim,
+      auditOperations.approveMemberIntake,
+      auditOperations.submitApplication,
+      auditOperations.approveApplication,
+      auditOperations.convertClaimToDirect,
+      auditOperations.preconfigureAccountClaim,
+      auditOperations.publishActivity,
+      auditOperations.publishAnnouncement,
+      auditOperations.publishAssociationPage,
+      auditOperations.publishGallery,
+      auditOperations.publishNews,
+      auditOperations.rejectAccountClaim,
+      auditOperations.rejectMemberIntake,
+      auditOperations.reopenAccountClaim,
+      auditOperations.reissueStatusReceipt,
+      auditOperations.submitAccountClaim,
+      auditOperations.submitMemberIntake,
+      auditOperations.updatePublicMessage,
+      auditOperations.withdrawClaimConversion,
+      auditOperations.unpublishActivity,
+      auditOperations.unpublishAnnouncement,
+      auditOperations.unpublishAssociationPage,
+      auditOperations.unpublishGallery,
+      auditOperations.unpublishNews,
+    ),
+    delete: denyAll,
+    read: canReadAuditEvent,
+    update: denyAll,
+  },
+  fields: [
+    {
+      name: 'actor',
+      type: 'relationship',
+      relationTo: 'auth-users',
+      label: '操作者',
+    },
+    {
+      name: 'action',
+      type: 'text',
+      index: true,
+      required: true,
+      label: '操作',
+    },
+    { name: 'targetType', type: 'text', required: true, label: '目标类型' },
+    {
+      name: 'targetId',
+      type: 'text',
+      index: true,
+      required: true,
+      label: '目标 ID',
+    },
+    { name: 'result', type: 'text', required: true, label: '结果' },
+    {
+      name: 'requestId',
+      type: 'text',
+      index: true,
+      required: true,
+      label: '请求 ID',
+    },
+    { name: 'metadata', type: 'json', label: '附加信息' },
+    { name: 'occurredAt', type: 'date', required: true, label: '发生时间' },
+  ],
+}

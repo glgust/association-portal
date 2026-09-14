@@ -1,0 +1,246 @@
+.page {
+  width: min(100% - 2rem, 880px);
+  margin: 0 auto;
+  padding: 3rem 0 5rem;
+  overflow-wrap: anywhere;
+}
+
+.heading,
+.pathHeading {
+  max-width: 68ch;
+}
+
+.heading h1 {
+  margin: 0.2rem 0 0.8rem;
+  font-size: clamp(2rem, 7vw, 3.4rem);
+  line-height: 1.08;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #2456a6;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.workspace {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 2.5rem;
+}
+
+.modePicker,
+.identityGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.modePicker button,
+.identityCard,
+.contactRow,
+.status,
+.feedback {
+  border: 1px solid #c8d0df;
+  border-radius: 0.8rem;
+  background: #fff;
+}
+
+.receipt {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #c8d0df;
+}
+
+.receipt textarea {
+  width: 100%;
+  resize: vertical;
+  overflow-wrap: anywhere;
+}
+
+.modePicker button {
+  display: grid;
+  gap: 0.25rem;
+  padding: 1rem;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.modePicker button[aria-pressed='true'] {
+  border-color: #2456a6;
+  box-shadow: inset 0 0 0 2px #2456a6;
+  background: #eef4ff;
+}
+
+.modePicker small,
+.identityCard small,
+.hint {
+  color: #586174;
+}
+
+.status,
+.feedback {
+  padding: 1.2rem;
+}
+
+.status h2,
+.feedback h2 {
+  margin-top: 0;
+}
+
+.form {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.form fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid #c8d0df;
+  border-radius: 0.8rem;
+}
+
+.form legend {
+  padding: 0 0.35rem;
+  font-weight: 750;
+}
+
+.identityGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.identityCard {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+  padding: 0.9rem;
+  cursor: pointer;
+}
+
+.identityCard:has(input:checked) {
+  border-color: #2456a6;
+  box-shadow: inset 0 0 0 2px #2456a6;
+  background: #eef4ff;
+}
+
+.fields,
+.passwords,
+.contacts {
+  display: grid;
+  gap: 1rem;
+}
+
+.form label {
+  display: grid;
+  gap: 0.35rem;
+  font-weight: 650;
+}
+
+.form input,
+.form select,
+.form button {
+  min-height: 2.75rem;
+  font: inherit;
+}
+
+.form input,
+.form select {
+  width: 100%;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #8994a8;
+  border-radius: 0.4rem;
+  background: #fff;
+  color: inherit;
+}
+
+.form input[aria-invalid='true'] {
+  border-color: #a52920;
+}
+
+.form label > span:last-child,
+.fieldError {
+  color: #8b211b;
+  font-size: 0.92rem;
+  font-weight: 500;
+}
+
+.contactRow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
+  padding: 1rem;
+}
+
+.primaryChoice,
+.privacyChoice {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.primaryChoice input,
+.privacyChoice input,
+.identityCard input {
+  width: 1.2rem;
+  min-height: 1.2rem;
+  margin: 0.2rem 0 0;
+}
+
+.privacyChoice > span:last-child {
+  grid-column: 2;
+}
+
+.form button {
+  padding: 0.55rem 1rem;
+  border: 1px solid #2456a6;
+  border-radius: 0.45rem;
+  background: #fff;
+  color: #173f80;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.submit {
+  justify-self: start;
+  background: #2456a6 !important;
+  color: #fff !important;
+}
+
+.page button:focus-visible,
+.page input:focus-visible,
+.page select:focus-visible,
+.feedback:focus-visible {
+  outline: 3px solid #e3a92b;
+  outline-offset: 3px;
+}
+
+@media (max-width: 700px) {
+  .page {
+    width: min(100% - 1.25rem, 880px);
+    padding-top: 2rem;
+  }
+
+  .modePicker,
+  .identityGrid,
+  .contactRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page *,
+  .page *::before,
+  .page *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,1196 @@
+#!/bin/sh
+
+set -eu
+
+umask 077
+
+DEPLOY_SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
+DEPLOY_COMPOSE_FILE="$DEPLOY_SCRIPT_DIR/compose.deploy.yaml"
+DEPLOY_CONFIG_DIR=${ASCNUCC_CONFIG_DIR:-"$DEPLOY_SCRIPT_DIR/.ascnucc"}
+DEPLOY_CONFIG_FILE="$DEPLOY_CONFIG_DIR/deploy.env"
+DEPLOY_STATE_FILE="$DEPLOY_CONFIG_DIR/state.env"
+DEPLOY_DOCKER_CONFIG_DIR="$DEPLOY_CONFIG_DIR/docker"
+DEPLOY_LOCK_DIR="$DEPLOY_CONFIG_DIR/update.lock"
+DEPLOY_SCHEMA=1
+DEPLOY_MIN_COMPOSE_MAJOR=2
+DEPLOY_MIN_COMPOSE_MINOR=24
+
+say() {
+  printf '%s\n' "$*"
+}
+
+step() {
+  printf '\n==> %s\n' "$*"
+}
+
+warn() {
+  printf 'WARN: %s\n' "$*" >&2
+}
+
+fail() {
+  printf 'ERROR: %s\n' "$1" >&2
+  if [ "$#" -gt 1 ]; then
+    printf 'NEXT: %s\n' "$2" >&2
+  fi
+  exit 1
+}
+
+require_interactive() {
+  [ -t 0 ] || fail "This operation needs an interactive terminal." "Run the same command from a terminal."
+}
+
+prompt_default() {
+  DEPLOY_PROMPT_LABEL=$1
+  DEPLOY_PROMPT_DEFAULT=$2
+  printf '%s [%s]: ' "$DEPLOY_PROMPT_LABEL" "$DEPLOY_PROMPT_DEFAULT" >&2
+  IFS= read -r DEPLOY_PROMPT_REPLY
+  if [ -n "$DEPLOY_PROMPT_REPLY" ]; then
+    printf '%s' "$DEPLOY_PROMPT_REPLY"
+  else
+    printf '%s' "$DEPLOY_PROMPT_DEFAULT"
+  fi
+}
+
+prompt_optional() {
+  DEPLOY_PROMPT_LABEL=$1
+  printf '%s: ' "$DEPLOY_PROMPT_LABEL" >&2
+  IFS= read -r DEPLOY_PROMPT_REPLY
+  printf '%s' "$DEPLOY_PROMPT_REPLY"
+}
+
+prompt_secret() {
+  DEPLOY_PROMPT_LABEL=$1
+  printf '%s: ' "$DEPLOY_PROMPT_LABEL" >&2
+  stty -echo
+  trap 'stty echo' EXIT HUP INT TERM
+  IFS= read -r DEPLOY_PROMPT_REPLY
+  stty echo
+  trap - EXIT HUP INT TERM
+  printf '\n' >&2
+  printf '%s' "$DEPLOY_PROMPT_REPLY"
+}
+
+prompt_yes_no() {
+  DEPLOY_PROMPT_LABEL=$1
+  DEPLOY_PROMPT_DEFAULT=$2
+  if [ "$DEPLOY_PROMPT_DEFAULT" = yes ]; then
+    DEPLOY_PROMPT_SUFFIX='Y/n'
+  else
+    DEPLOY_PROMPT_SUFFIX='y/N'
+  fi
+  printf '%s [%s]: ' "$DEPLOY_PROMPT_LABEL" "$DEPLOY_PROMPT_SUFFIX" >&2
+  IFS= read -r DEPLOY_PROMPT_REPLY
+  case "$DEPLOY_PROMPT_REPLY" in
+    y|Y|yes|YES) return 0 ;;
+    n|N|no|NO) return 1 ;;
+    '') [ "$DEPLOY_PROMPT_DEFAULT" = yes ] ;;
+    *) return 1 ;;
+  esac
+}
+
+random_hex() {
+  DEPLOY_RANDOM_BYTES=$1
+  od -An -N "$DEPLOY_RANDOM_BYTES" -tx1 /dev/urandom | tr -d ' \n'
+}
+
+config_write_line() {
+  DEPLOY_CONFIG_TARGET=$1
+  DEPLOY_CONFIG_KEY=$2
+  DEPLOY_CONFIG_VALUE=$3
+  case "$DEPLOY_CONFIG_VALUE" in
+    *"
+"*) fail "A configuration value contains a newline." "Run ./deploy init again with a single-line value." ;;
+  esac
+  printf '%s=%s\n' "$DEPLOY_CONFIG_KEY" "$DEPLOY_CONFIG_VALUE" >> "$DEPLOY_CONFIG_TARGET"
+}
+
+load_env_file() {
+  DEPLOY_ENV_FILE=$1
+  [ -f "$DEPLOY_ENV_FILE" ] || return 0
+  while IFS= read -r DEPLOY_ENV_LINE || [ -n "$DEPLOY_ENV_LINE" ]; do
+    DEPLOY_ENV_LINE=$(printf '%s' "$DEPLOY_ENV_LINE" | tr -d '\r')
+    case "$DEPLOY_ENV_LINE" in
+      ''|'#'*) continue ;;
+      *=*) ;;
+      *) fail "Invalid configuration line in $DEPLOY_ENV_FILE." "Run ./deploy init to repair the configuration." ;;
+    esac
+    DEPLOY_ENV_KEY=${DEPLOY_ENV_LINE%%=*}
+    DEPLOY_ENV_VALUE=${DEPLOY_ENV_LINE#*=}
+    case "$DEPLOY_ENV_KEY" in
+      ASCNUCC_*|CMS_API_URL|DATABASE_URL|PAYLOAD_SECRET|MEDIA_S3_*|POSTGRES_*|MINIO_*|DEMO_*)
+        export "$DEPLOY_ENV_KEY=$DEPLOY_ENV_VALUE"
+        ;;
+      *)
+        fail "Unsupported configuration key: $DEPLOY_ENV_KEY" "Remove the unknown key or run ./deploy init with the matching release bundle."
+        ;;
+    esac
+  done < "$DEPLOY_ENV_FILE"
+}
+
+load_configuration() {
+  [ -f "$DEPLOY_CONFIG_FILE" ] || fail "Deployment is not initialized." "Run ./deploy init"
+  load_env_file "$DEPLOY_CONFIG_FILE"
+  load_env_file "$DEPLOY_STATE_FILE"
+}
+
+has_role() {
+  case ",${ASCNUCC_ROLES:-}," in
+    *",$1,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_roles() {
+  DEPLOY_ROLE_INPUT=$(printf '%s' "$1" | tr -d ' ')
+  [ "$DEPLOY_ROLE_INPUT" != all ] || DEPLOY_ROLE_INPUT=web,cms,data
+  case "$DEPLOY_ROLE_INPUT" in
+    ''|,*|*,|*,,*) fail "Invalid deployment role list: $1" "Use all, web, cms, data, or a comma-separated combination." ;;
+  esac
+  DEPLOY_ROLE_OUTPUT=
+  DEPLOY_ROLE_OLD_IFS=$IFS
+  IFS=,
+  for DEPLOY_ROLE_NAME in $DEPLOY_ROLE_INPUT; do
+    case "$DEPLOY_ROLE_NAME" in
+      web|cms|data) ;;
+      *)
+        IFS=$DEPLOY_ROLE_OLD_IFS
+        fail "Unknown deployment role: $DEPLOY_ROLE_NAME" "Use all, web, cms, data, or a comma-separated combination."
+        ;;
+    esac
+  done
+  IFS=$DEPLOY_ROLE_OLD_IFS
+  for DEPLOY_ROLE_NAME in web cms data; do
+    case ",$DEPLOY_ROLE_INPUT," in
+      *",$DEPLOY_ROLE_NAME,"*)
+        if [ -n "$DEPLOY_ROLE_OUTPUT" ]; then DEPLOY_ROLE_OUTPUT="$DEPLOY_ROLE_OUTPUT,$DEPLOY_ROLE_NAME"; else DEPLOY_ROLE_OUTPUT=$DEPLOY_ROLE_NAME; fi
+        ;;
+    esac
+  done
+  [ -n "$DEPLOY_ROLE_OUTPUT" ] || fail "At least one deployment role is required." "Use all, web, cms, or data."
+  printf '%s' "$DEPLOY_ROLE_OUTPUT"
+}
+
+valid_environment() {
+  [ "$1" = production ] || [ "$1" = demo ]
+}
+
+valid_release() {
+  [ "$1" = latest ] && return 0
+  printf '%s' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
+}
+
+release_tag() {
+  if [ "$1" = latest ]; then
+    printf 'stable'
+  else
+    printf '%s' "$1"
+  fi
+}
+
+valid_port() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+valid_ipv4() {
+  printf '%s\n' "$1" | awk -F. '
+    NF != 4 { exit 1 }
+    {
+      for (i = 1; i <= 4; i++) {
+        if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) exit 1
+      }
+    }
+  '
+}
+
+validate_custom_data_root() {
+  DEPLOY_DATA_ROOT=$1
+  case "$DEPLOY_DATA_ROOT" in
+    /*) ;;
+    *) fail "Custom data directory must be absolute." "Choose a dedicated absolute directory such as /srv/ascnucc-data." ;;
+  esac
+  case "$DEPLOY_DATA_ROOT" in
+    /|/home|/root|/var|/srv|/opt|/usr|/etc|/tmp)
+      fail "The selected data directory is too broad: $DEPLOY_DATA_ROOT" "Choose a dedicated child directory such as /srv/ascnucc-data."
+      ;;
+    *'/../'*|*/..|*'/./'*)
+      fail "The selected data directory is not normalized." "Use an absolute path without . or .. segments."
+      ;;
+  esac
+  case "$DEPLOY_DATA_ROOT" in
+    "$DEPLOY_SCRIPT_DIR"|"$DEPLOY_SCRIPT_DIR"/*)
+      fail "The repository or deployment bundle cannot be used as a data directory." "Choose a dedicated directory outside $DEPLOY_SCRIPT_DIR."
+      ;;
+  esac
+}
+
+docker_cli() {
+  if [ "${ASCNUCC_REGISTRY_AUTH_MODE:-dedicated}" = dedicated ]; then
+    command docker --config "$DEPLOY_DOCKER_CONFIG_DIR" "$@"
+  else
+    command docker "$@"
+  fi
+}
+
+set_compose_scope() {
+  DEPLOY_PROFILE_ARGS=
+  DEPLOY_SELECTED_SERVICES=
+  if has_role web; then
+    DEPLOY_PROFILE_ARGS="$DEPLOY_PROFILE_ARGS --profile web"
+    DEPLOY_SELECTED_SERVICES="$DEPLOY_SELECTED_SERVICES web"
+  fi
+  if has_role cms; then
+    DEPLOY_PROFILE_ARGS="$DEPLOY_PROFILE_ARGS --profile cms"
+    DEPLOY_SELECTED_SERVICES="$DEPLOY_SELECTED_SERVICES cms"
+  fi
+  if has_role data; then
+    DEPLOY_PROFILE_ARGS="$DEPLOY_PROFILE_ARGS --profile data"
+    DEPLOY_SELECTED_SERVICES="$DEPLOY_SELECTED_SERVICES postgres minio"
+  fi
+}
+
+compose_cmd() {
+  set_compose_scope
+  # DEPLOY_PROFILE_ARGS contains only fixed profile switches assembled above.
+  # shellcheck disable=SC2086
+  docker_cli compose --env-file "$DEPLOY_CONFIG_FILE" -p "$ASCNUCC_COMPOSE_PROJECT" -f "$DEPLOY_COMPOSE_FILE" $DEPLOY_PROFILE_ARGS "$@"
+}
+
+redact_stream() {
+  awk '
+    function literal_replace(text, needle, replacement, result, pos) {
+      if (needle == "") return text
+      result = ""
+      while ((pos = index(text, needle)) > 0) {
+        result = result substr(text, 1, pos - 1) replacement
+        text = substr(text, pos + length(needle))
+      }
+      return result text
+    }
+    {
+      line = $0
+      line = literal_replace(line, ENVIRON["PAYLOAD_SECRET"], "[REDACTED]")
+      line = literal_replace(line, ENVIRON["POSTGRES_PASSWORD"], "[REDACTED]")
+      line = literal_replace(line, ENVIRON["MINIO_ROOT_PASSWORD"], "[REDACTED]")
+      line = literal_replace(line, ENVIRON["MEDIA_S3_SECRET_ACCESS_KEY"], "[REDACTED]")
+      line = literal_replace(line, ENVIRON["MEDIA_S3_ACCESS_KEY_ID"], "[REDACTED]")
+      line = literal_replace(line, ENVIRON["DEMO_ADMIN_PASSWORD"], "[REDACTED]")
+      line = literal_replace(line, ENVIRON["DEMO_STAFF_PASSWORD"], "[REDACTED]")
+      line = literal_replace(line, ENVIRON["DEMO_CADRE_PASSWORD"], "[REDACTED]")
+      gsub(/:\/\/[^[:space:]\/@:]+:[^[:space:]\/@]+@/, "://[REDACTED]@", line)
+      print line
+    }
+  '
+}
+
+detect_registry_auth_mode() {
+  DEPLOY_SYSTEM_DOCKER_CONFIG=${DOCKER_CONFIG:-"${HOME:-}/.docker"}
+  if [ -n "${HOME:-}" ] && [ -f "$DEPLOY_SYSTEM_DOCKER_CONFIG/config.json" ] && \
+    grep -Eq '"(credsStore|credHelpers)"[[:space:]]*:' "$DEPLOY_SYSTEM_DOCKER_CONFIG/config.json"; then
+    printf 'system'
+  else
+    printf 'dedicated'
+  fi
+}
+
+image_reference() {
+  DEPLOY_IMAGE_COMPONENT=$1
+  DEPLOY_IMAGE_RELEASE=$2
+  DEPLOY_IMAGE_TAG=$(release_tag "$DEPLOY_IMAGE_RELEASE")
+  printf 'ghcr.io/%s/association-portal-%s:%s' "$ASCNUCC_IMAGE_OWNER" "$DEPLOY_IMAGE_COMPONENT" "$DEPLOY_IMAGE_TAG"
+}
+
+registry_access_ok() {
+  DEPLOY_REGISTRY_COMPONENT=$1
+  DEPLOY_REGISTRY_RELEASE=${ASCNUCC_ACTIVE_RELEASE_REQUEST:-$ASCNUCC_RELEASE}
+  DEPLOY_REGISTRY_REF=$(image_reference "$DEPLOY_REGISTRY_COMPONENT" "$DEPLOY_REGISTRY_RELEASE")
+  docker_cli manifest inspect "$DEPLOY_REGISTRY_REF" >/dev/null 2>&1
+}
+
+ensure_registry_login() {
+  if ! has_role web && ! has_role cms; then
+    return 0
+  fi
+  DEPLOY_LOGIN_COMPONENT=web
+  has_role web || DEPLOY_LOGIN_COMPONENT=cms
+  if registry_access_ok "$DEPLOY_LOGIN_COMPONENT"; then
+    say 'Private GHCR access is ready.'
+    return 0
+  fi
+  require_interactive
+  step 'Private GHCR login'
+  say 'Create a GitHub PAT (classic) with read:packages only; the token is not stored in deploy.env.'
+  DEPLOY_REGISTRY_TOKEN=$(prompt_secret 'GHCR read-only token')
+  [ -n "$DEPLOY_REGISTRY_TOKEN" ] || fail "The GHCR token cannot be empty." "Run ./deploy init and provide a read:packages token."
+  if [ "$ASCNUCC_REGISTRY_AUTH_MODE" = dedicated ]; then
+    mkdir -p "$DEPLOY_DOCKER_CONFIG_DIR"
+    chmod 700 "$DEPLOY_DOCKER_CONFIG_DIR"
+  fi
+  if ! printf '%s' "$DEPLOY_REGISTRY_TOKEN" | docker_cli login ghcr.io --username "$ASCNUCC_REGISTRY_USERNAME" --password-stdin >/dev/null 2>&1; then
+    DEPLOY_REGISTRY_TOKEN=
+    fail "GHCR authentication failed." "Run ./deploy init and verify the username, token expiry, read:packages scope, and package Read access."
+  fi
+  DEPLOY_REGISTRY_TOKEN=
+  if [ "$ASCNUCC_REGISTRY_AUTH_MODE" = dedicated ] && [ -f "$DEPLOY_DOCKER_CONFIG_DIR/config.json" ]; then
+    chmod 600 "$DEPLOY_DOCKER_CONFIG_DIR/config.json"
+  fi
+  registry_access_ok "$DEPLOY_LOGIN_COMPONENT" || fail "GHCR login succeeded but the selected release is not readable." "Check package Read access or choose an existing Release."
+  say 'Private GHCR access is ready.'
+}
+
+init_command() {
+  require_interactive
+  if [ -f "$DEPLOY_CONFIG_FILE" ]; then
+    load_configuration
+    step 'Existing deployment configuration'
+    say "Deployment: $ASCNUCC_DEPLOYMENT_ID"
+    say "Roles: $ASCNUCC_ROLES"
+    say "Release target: $ASCNUCC_RELEASE"
+    ensure_registry_login
+    probe_command
+    say 'Configuration kept unchanged. Next: ./deploy up'
+    return 0
+  fi
+
+  step 'ASCNUCC deployment initialization'
+  say 'Press Enter to accept safe defaults. Secrets are generated locally and never printed.'
+  DEPLOY_INIT_ROLES=$(prompt_default 'Roles (all/web/cms/data or a comma-separated combination)' all)
+  DEPLOY_INIT_ROLES=$(normalize_roles "$DEPLOY_INIT_ROLES")
+  ASCNUCC_ROLES=$DEPLOY_INIT_ROLES
+  export ASCNUCC_ROLES
+
+  DEPLOY_INIT_ENVIRONMENT=$(prompt_default 'Environment (production/demo)' demo)
+  valid_environment "$DEPLOY_INIT_ENVIRONMENT" || fail "Environment must be production or demo." "Run ./deploy init again."
+
+  DEPLOY_INIT_RELEASE=v1.0.0
+  DEPLOY_INIT_OWNER=YOUR_GITHUB_ACCOUNT
+  DEPLOY_INIT_REGISTRY_USERNAME=YOUR_GITHUB_ACCOUNT
+  DEPLOY_INIT_AUTH_MODE=$(detect_registry_auth_mode)
+  if has_role web || has_role cms; then
+    DEPLOY_INIT_RELEASE=$(prompt_default 'Release (latest or an exact version such as v1.0.0)' v1.0.0)
+    valid_release "$DEPLOY_INIT_RELEASE" || fail "Release must be latest or a semantic version such as v1.0.0." "Run ./deploy init again."
+    DEPLOY_INIT_OWNER=$(prompt_default 'GHCR image owner' YOUR_GITHUB_ACCOUNT)
+    [ "$DEPLOY_INIT_OWNER" != YOUR_GITHUB_ACCOUNT ] || fail "Enter the actual owner of the open-source GHCR images." "Run ./deploy init again."
+    DEPLOY_INIT_REGISTRY_USERNAME=$(prompt_default 'GitHub username used to pull private images' YOUR_GITHUB_ACCOUNT)
+  fi
+
+  DEPLOY_INIT_APP_BIND=127.0.0.1
+  if has_role web || has_role cms; then
+    DEPLOY_INIT_APP_BIND=$(prompt_default 'Application bind IPv4 (loopback, Tailscale, or trusted LAN address)' 127.0.0.1)
+    valid_ipv4 "$DEPLOY_INIT_APP_BIND" || fail "Application bind address must be IPv4." "Run ./deploy init again with a local IPv4 address."
+  fi
+
+  DEPLOY_INIT_DATA_BIND=127.0.0.1
+  DEPLOY_INIT_DATA_STORAGE=docker
+  DEPLOY_INIT_DATA_ROOT=
+  if has_role data; then
+    if prompt_yes_no 'Will another machine connect directly to PostgreSQL or MinIO?' no; then
+      DEPLOY_INIT_DATA_BIND=$(prompt_default 'Data bind IPv4 (Tailscale recommended)' 127.0.0.1)
+      valid_ipv4 "$DEPLOY_INIT_DATA_BIND" || fail "Data bind address must be IPv4." "Run ./deploy init again with a local IPv4 address."
+      warn 'Data services do not add transport TLS; use Tailscale or a separately secured trusted network.'
+    fi
+    if prompt_yes_no 'Use a custom host data directory instead of Docker-managed volumes?' no; then
+      DEPLOY_INIT_DATA_STORAGE=bind
+      DEPLOY_INIT_DATA_ROOT=$(prompt_default 'Dedicated data directory' "/srv/ascnucc-$DEPLOY_INIT_ENVIRONMENT")
+      validate_custom_data_root "$DEPLOY_INIT_DATA_ROOT"
+      mkdir -p "$DEPLOY_INIT_DATA_ROOT/postgres" "$DEPLOY_INIT_DATA_ROOT/minio"
+      chmod 700 "$DEPLOY_INIT_DATA_ROOT" "$DEPLOY_INIT_DATA_ROOT/postgres" "$DEPLOY_INIT_DATA_ROOT/minio"
+    fi
+  fi
+
+  DEPLOY_INIT_WEB_PORT=3000
+  DEPLOY_INIT_CMS_PORT=3001
+  DEPLOY_INIT_POSTGRES_PORT=5432
+  DEPLOY_INIT_MINIO_PORT=9000
+  DEPLOY_INIT_MINIO_CONSOLE_PORT=9001
+  if prompt_yes_no 'Customize service ports?' no; then
+    has_role web && DEPLOY_INIT_WEB_PORT=$(prompt_default 'Web port' 3000)
+    has_role cms && DEPLOY_INIT_CMS_PORT=$(prompt_default 'CMS port' 3001)
+    if has_role data; then
+      DEPLOY_INIT_POSTGRES_PORT=$(prompt_default 'PostgreSQL port' 5432)
+      DEPLOY_INIT_MINIO_PORT=$(prompt_default 'MinIO API port' 9000)
+      DEPLOY_INIT_MINIO_CONSOLE_PORT=$(prompt_default 'MinIO console port' 9001)
+    fi
+  fi
+  for DEPLOY_INIT_PORT in "$DEPLOY_INIT_WEB_PORT" "$DEPLOY_INIT_CMS_PORT" "$DEPLOY_INIT_POSTGRES_PORT" "$DEPLOY_INIT_MINIO_PORT" "$DEPLOY_INIT_MINIO_CONSOLE_PORT"; do
+    valid_port "$DEPLOY_INIT_PORT" || fail "Port is outside 1-65535: $DEPLOY_INIT_PORT" "Run ./deploy init again."
+  done
+  DEPLOY_INIT_PORTS=" $DEPLOY_INIT_WEB_PORT $DEPLOY_INIT_CMS_PORT $DEPLOY_INIT_POSTGRES_PORT $DEPLOY_INIT_MINIO_PORT $DEPLOY_INIT_MINIO_CONSOLE_PORT "
+  DEPLOY_INIT_UNIQUE_PORTS=$(printf '%s\n' $DEPLOY_INIT_PORTS | sort -u | wc -l | tr -d ' ')
+  [ "$DEPLOY_INIT_UNIQUE_PORTS" -eq 5 ] || fail "Service ports must be distinct." "Run ./deploy init again with unique ports."
+
+  DEPLOY_INIT_ID="ascnucc-$(random_hex 6)"
+  DEPLOY_INIT_PROJECT=$(printf '%s' "$DEPLOY_INIT_ID" | tr '-' '_')
+  DEPLOY_INIT_DATABASE_URL=
+  DEPLOY_INIT_POSTGRES_DB=
+  DEPLOY_INIT_POSTGRES_USER=
+  DEPLOY_INIT_POSTGRES_PASSWORD=
+  DEPLOY_INIT_PAYLOAD_SECRET=
+  DEPLOY_INIT_S3_ENDPOINT=
+  DEPLOY_INIT_S3_REGION=
+  DEPLOY_INIT_S3_BUCKET=
+  DEPLOY_INIT_S3_ACCESS=
+  DEPLOY_INIT_S3_SECRET=
+  DEPLOY_INIT_S3_PATH_STYLE=false
+  DEPLOY_INIT_MINIO_ROOT_USER=
+  DEPLOY_INIT_MINIO_ROOT_PASSWORD=
+  DEPLOY_INIT_CMS_API_URL=
+  DEPLOY_INIT_DEMO_ADMIN_USERNAME=
+  DEPLOY_INIT_DEMO_ADMIN_PASSWORD=
+  DEPLOY_INIT_DEMO_STAFF_USERNAME=
+  DEPLOY_INIT_DEMO_STAFF_PASSWORD=
+  DEPLOY_INIT_DEMO_CADRE_USERNAME=
+  DEPLOY_INIT_DEMO_CADRE_PASSWORD=
+
+  if has_role cms; then
+    DEPLOY_INIT_PAYLOAD_SECRET=$(random_hex 48)
+    if has_role data; then
+      DEPLOY_INIT_POSTGRES_DB=ascnucc
+      [ "$DEPLOY_INIT_ENVIRONMENT" != demo ] || DEPLOY_INIT_POSTGRES_DB=ascnucc_demo_dev
+      DEPLOY_INIT_POSTGRES_USER=ascnucc
+      DEPLOY_INIT_POSTGRES_PASSWORD=$(random_hex 32)
+      DEPLOY_INIT_DATABASE_URL="postgres://$DEPLOY_INIT_POSTGRES_USER:$DEPLOY_INIT_POSTGRES_PASSWORD@postgres:5432/$DEPLOY_INIT_POSTGRES_DB"
+      DEPLOY_INIT_S3_ENDPOINT=http://minio:9000
+      DEPLOY_INIT_S3_REGION=us-east-1
+      DEPLOY_INIT_S3_BUCKET=ascnucc-media
+      DEPLOY_INIT_S3_ACCESS="ascnucc-$(random_hex 12)"
+      DEPLOY_INIT_S3_SECRET=$(random_hex 32)
+      DEPLOY_INIT_S3_PATH_STYLE=true
+      DEPLOY_INIT_MINIO_ROOT_USER="root-$(random_hex 12)"
+      DEPLOY_INIT_MINIO_ROOT_PASSWORD=$(random_hex 32)
+    else
+      DEPLOY_INIT_DATABASE_URL=$(prompt_secret 'External PostgreSQL DATABASE_URL')
+      DEPLOY_INIT_S3_ENDPOINT=$(prompt_default 'Private S3 endpoint' https://s3.example.invalid)
+      DEPLOY_INIT_S3_REGION=$(prompt_default 'S3 region' us-east-1)
+      DEPLOY_INIT_S3_BUCKET=$(prompt_default 'Private S3 bucket' ascnucc-media)
+      DEPLOY_INIT_S3_ACCESS=$(prompt_secret 'S3 access key ID')
+      DEPLOY_INIT_S3_SECRET=$(prompt_secret 'S3 secret access key')
+      case "$DEPLOY_INIT_DATABASE_URL" in postgres://*|postgresql://*) ;; *) fail "External DATABASE_URL must use postgres:// or postgresql://." "Run ./deploy init again." ;; esac
+      case "$DEPLOY_INIT_S3_ENDPOINT" in http://*|https://*) ;; *) fail "S3 endpoint must be an absolute HTTP(S) URL." "Run ./deploy init again." ;; esac
+      [ -n "$DEPLOY_INIT_S3_ACCESS" ] && [ -n "$DEPLOY_INIT_S3_SECRET" ] || fail "External S3 credentials cannot be empty." "Run ./deploy init again."
+      if prompt_yes_no 'Use S3 path-style addressing?' no; then DEPLOY_INIT_S3_PATH_STYLE=true; fi
+    fi
+  elif has_role data; then
+    DEPLOY_INIT_POSTGRES_DB=ascnucc
+    [ "$DEPLOY_INIT_ENVIRONMENT" != demo ] || DEPLOY_INIT_POSTGRES_DB=ascnucc_demo_dev
+    DEPLOY_INIT_POSTGRES_USER=ascnucc
+    DEPLOY_INIT_POSTGRES_PASSWORD=$(random_hex 32)
+    DEPLOY_INIT_S3_REGION=us-east-1
+    DEPLOY_INIT_S3_BUCKET=ascnucc-media
+    DEPLOY_INIT_S3_ACCESS="ascnucc-$(random_hex 12)"
+    DEPLOY_INIT_S3_SECRET=$(random_hex 32)
+    DEPLOY_INIT_MINIO_ROOT_USER="root-$(random_hex 12)"
+    DEPLOY_INIT_MINIO_ROOT_PASSWORD=$(random_hex 32)
+  fi
+
+  if has_role web; then
+    if has_role cms; then
+      DEPLOY_INIT_CMS_API_URL=http://cms:3001
+    else
+      DEPLOY_INIT_CMS_API_URL=$(prompt_default 'External CMS API URL' https://cms.example.invalid)
+      case "$DEPLOY_INIT_CMS_API_URL" in http://*|https://*) ;; *) fail "CMS API URL must be an absolute HTTP(S) URL." "Run ./deploy init again." ;; esac
+    fi
+  fi
+
+  if [ "$DEPLOY_INIT_ENVIRONMENT" = demo ] && has_role cms && has_role data; then
+    DEPLOY_INIT_DEMO_ADMIN_USERNAME=demo-owner
+    DEPLOY_INIT_DEMO_ADMIN_PASSWORD=$(random_hex 24)
+    DEPLOY_INIT_DEMO_STAFF_USERNAME=demo-staff
+    DEPLOY_INIT_DEMO_STAFF_PASSWORD=$(random_hex 24)
+    DEPLOY_INIT_DEMO_CADRE_USERNAME=demo-cadre
+    DEPLOY_INIT_DEMO_CADRE_PASSWORD=$(random_hex 24)
+  fi
+
+  mkdir -p "$DEPLOY_CONFIG_DIR"
+  chmod 700 "$DEPLOY_CONFIG_DIR"
+  DEPLOY_CONFIG_TMP="$DEPLOY_CONFIG_DIR/deploy.env.new.$$"
+  : > "$DEPLOY_CONFIG_TMP"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_CONFIG_SCHEMA "$DEPLOY_SCHEMA"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_DEPLOYMENT_ID "$DEPLOY_INIT_ID"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_COMPOSE_PROJECT "$DEPLOY_INIT_PROJECT"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_ENVIRONMENT "$DEPLOY_INIT_ENVIRONMENT"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_ROLES "$DEPLOY_INIT_ROLES"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_RELEASE "$DEPLOY_INIT_RELEASE"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_IMAGE_OWNER "$DEPLOY_INIT_OWNER"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_REGISTRY_USERNAME "$DEPLOY_INIT_REGISTRY_USERNAME"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_REGISTRY_AUTH_MODE "$DEPLOY_INIT_AUTH_MODE"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_APP_BIND_IP "$DEPLOY_INIT_APP_BIND"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_DATA_BIND_IP "$DEPLOY_INIT_DATA_BIND"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_WEB_PORT "$DEPLOY_INIT_WEB_PORT"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_CMS_PORT "$DEPLOY_INIT_CMS_PORT"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_POSTGRES_PORT "$DEPLOY_INIT_POSTGRES_PORT"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_MINIO_PORT "$DEPLOY_INIT_MINIO_PORT"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_MINIO_CONSOLE_PORT "$DEPLOY_INIT_MINIO_CONSOLE_PORT"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_DATA_STORAGE "$DEPLOY_INIT_DATA_STORAGE"
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_DATA_ROOT "$DEPLOY_INIT_DATA_ROOT"
+  if [ "$DEPLOY_INIT_DATA_STORAGE" = bind ]; then
+    config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_POSTGRES_DATA_SOURCE "$DEPLOY_INIT_DATA_ROOT/postgres"
+    config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_MINIO_DATA_SOURCE "$DEPLOY_INIT_DATA_ROOT/minio"
+  else
+    config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_POSTGRES_DATA_SOURCE postgres_data
+    config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_MINIO_DATA_SOURCE minio_data
+  fi
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_POSTGRES_IMAGE 'postgres:17.11-alpine3.23@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4'
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_MINIO_IMAGE 'minio/minio:RELEASE.2025-06-13T11-33-47Z@sha256:064117214caceaa8d8a90ef7caa58f2b2aeb316b5156afe9ee8da5b4d83e12c8'
+  config_write_line "$DEPLOY_CONFIG_TMP" ASCNUCC_MC_IMAGE 'minio/mc:RELEASE.2025-05-21T01-59-54Z@sha256:09f93f534cde415d192bb6084dd0e0ddd1715fb602f8a922ad121fd2bf0f8b44'
+  config_write_line "$DEPLOY_CONFIG_TMP" DATABASE_URL "$DEPLOY_INIT_DATABASE_URL"
+  config_write_line "$DEPLOY_CONFIG_TMP" PAYLOAD_SECRET "$DEPLOY_INIT_PAYLOAD_SECRET"
+  config_write_line "$DEPLOY_CONFIG_TMP" POSTGRES_DB "$DEPLOY_INIT_POSTGRES_DB"
+  config_write_line "$DEPLOY_CONFIG_TMP" POSTGRES_USER "$DEPLOY_INIT_POSTGRES_USER"
+  config_write_line "$DEPLOY_CONFIG_TMP" POSTGRES_PASSWORD "$DEPLOY_INIT_POSTGRES_PASSWORD"
+  config_write_line "$DEPLOY_CONFIG_TMP" MEDIA_S3_ENDPOINT "$DEPLOY_INIT_S3_ENDPOINT"
+  config_write_line "$DEPLOY_CONFIG_TMP" MEDIA_S3_REGION "$DEPLOY_INIT_S3_REGION"
+  config_write_line "$DEPLOY_CONFIG_TMP" MEDIA_S3_BUCKET "$DEPLOY_INIT_S3_BUCKET"
+  config_write_line "$DEPLOY_CONFIG_TMP" MEDIA_S3_ACCESS_KEY_ID "$DEPLOY_INIT_S3_ACCESS"
+  config_write_line "$DEPLOY_CONFIG_TMP" MEDIA_S3_SECRET_ACCESS_KEY "$DEPLOY_INIT_S3_SECRET"
+  config_write_line "$DEPLOY_CONFIG_TMP" MEDIA_S3_FORCE_PATH_STYLE "$DEPLOY_INIT_S3_PATH_STYLE"
+  config_write_line "$DEPLOY_CONFIG_TMP" MINIO_ROOT_USER "$DEPLOY_INIT_MINIO_ROOT_USER"
+  config_write_line "$DEPLOY_CONFIG_TMP" MINIO_ROOT_PASSWORD "$DEPLOY_INIT_MINIO_ROOT_PASSWORD"
+  config_write_line "$DEPLOY_CONFIG_TMP" CMS_API_URL "$DEPLOY_INIT_CMS_API_URL"
+  config_write_line "$DEPLOY_CONFIG_TMP" DEMO_ADMIN_USERNAME "$DEPLOY_INIT_DEMO_ADMIN_USERNAME"
+  config_write_line "$DEPLOY_CONFIG_TMP" DEMO_ADMIN_PASSWORD "$DEPLOY_INIT_DEMO_ADMIN_PASSWORD"
+  config_write_line "$DEPLOY_CONFIG_TMP" DEMO_STAFF_USERNAME "$DEPLOY_INIT_DEMO_STAFF_USERNAME"
+  config_write_line "$DEPLOY_CONFIG_TMP" DEMO_STAFF_PASSWORD "$DEPLOY_INIT_DEMO_STAFF_PASSWORD"
+  config_write_line "$DEPLOY_CONFIG_TMP" DEMO_CADRE_USERNAME "$DEPLOY_INIT_DEMO_CADRE_USERNAME"
+  config_write_line "$DEPLOY_CONFIG_TMP" DEMO_CADRE_PASSWORD "$DEPLOY_INIT_DEMO_CADRE_PASSWORD"
+  chmod 600 "$DEPLOY_CONFIG_TMP"
+  mv "$DEPLOY_CONFIG_TMP" "$DEPLOY_CONFIG_FILE"
+
+  load_configuration
+  ensure_registry_login
+  probe_command
+  say 'Initialization complete. Next: ./deploy up'
+}
+
+add_probe_error() {
+  DEPLOY_PROBE_ERRORS=$((DEPLOY_PROBE_ERRORS + 1))
+  DEPLOY_PROBE_ERROR_TEXT="$DEPLOY_PROBE_ERROR_TEXT\n  - $*"
+}
+
+add_probe_warning() {
+  DEPLOY_PROBE_WARNINGS=$((DEPLOY_PROBE_WARNINGS + 1))
+  DEPLOY_PROBE_WARNING_TEXT="$DEPLOY_PROBE_WARNING_TEXT\n  - $*"
+}
+
+compose_version_ok() {
+  DEPLOY_COMPOSE_VERSION=$(docker compose version --short 2>/dev/null | sed 's/^v//;s/[^0-9.].*$//') || return 1
+  DEPLOY_COMPOSE_MAJOR=${DEPLOY_COMPOSE_VERSION%%.*}
+  DEPLOY_COMPOSE_REST=${DEPLOY_COMPOSE_VERSION#*.}
+  DEPLOY_COMPOSE_MINOR=${DEPLOY_COMPOSE_REST%%.*}
+  case "$DEPLOY_COMPOSE_MAJOR:$DEPLOY_COMPOSE_MINOR" in
+    *[!0-9:]*|:) return 1 ;;
+  esac
+  [ "$DEPLOY_COMPOSE_MAJOR" -gt "$DEPLOY_MIN_COMPOSE_MAJOR" ] || {
+    [ "$DEPLOY_COMPOSE_MAJOR" -eq "$DEPLOY_MIN_COMPOSE_MAJOR" ] && [ "$DEPLOY_COMPOSE_MINOR" -ge "$DEPLOY_MIN_COMPOSE_MINOR" ]
+  }
+}
+
+ip_is_local() {
+  DEPLOY_CHECK_IP=$1
+  case "$DEPLOY_CHECK_IP" in
+    127.*) return 0 ;;
+  esac
+  if command -v ip >/dev/null 2>&1; then
+    ip -o -4 address show 2>/dev/null | awk -v target="$DEPLOY_CHECK_IP" '{ split($4, value, "/"); if (value[1] == target) found=1 } END { exit found ? 0 : 1 }'
+    return $?
+  fi
+  if command -v hostname >/dev/null 2>&1; then
+    for DEPLOY_LOCAL_IP in $(hostname -I 2>/dev/null || true); do
+      [ "$DEPLOY_LOCAL_IP" != "$DEPLOY_CHECK_IP" ] || return 0
+    done
+  fi
+  return 1
+}
+
+port_is_listening() {
+  DEPLOY_CHECK_PORT=$1
+  DEPLOY_CHECK_HEX=$(printf '%04X' "$DEPLOY_CHECK_PORT")
+  awk -v port=":$DEPLOY_CHECK_HEX" '$2 ~ port"$" && $4 == "0A" { found=1 } END { exit found ? 0 : 1 }' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+}
+
+port_owned_by_deployment() {
+  DEPLOY_CHECK_PORT=$1
+  docker ps --filter "label=io.ascnucc.deployment-id=$ASCNUCC_DEPLOYMENT_ID" --format '{{.Ports}}' 2>/dev/null | grep -Eq "[:.]$DEPLOY_CHECK_PORT->"
+}
+
+check_port() {
+  DEPLOY_CHECK_PORT=$1
+  DEPLOY_CHECK_NAME=$2
+  if port_is_listening "$DEPLOY_CHECK_PORT" && ! port_owned_by_deployment "$DEPLOY_CHECK_PORT"; then
+    add_probe_error "$DEPLOY_CHECK_NAME port $DEPLOY_CHECK_PORT is already in use by another process."
+  fi
+}
+
+check_free_space() {
+  DEPLOY_SPACE_PATH=$1
+  DEPLOY_SPACE_NAME=$2
+  DEPLOY_SPACE_KB=$(df -Pk "$DEPLOY_SPACE_PATH" 2>/dev/null | awk 'NR == 2 { print $4 }')
+  case "$DEPLOY_SPACE_KB" in
+    ''|*[!0-9]*) add_probe_warning "Could not determine free space for $DEPLOY_SPACE_NAME." ;;
+    *)
+      if [ "$DEPLOY_SPACE_KB" -lt 1048576 ]; then
+        add_probe_error "$DEPLOY_SPACE_NAME has less than 1 GiB free."
+      elif [ "$DEPLOY_SPACE_KB" -lt 5242880 ]; then
+        add_probe_warning "$DEPLOY_SPACE_NAME has less than 5 GiB free."
+      fi
+      ;;
+  esac
+}
+
+tcp_reachable() {
+  DEPLOY_TCP_HOST=$1
+  DEPLOY_TCP_PORT=$2
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 4 "$DEPLOY_TCP_HOST" "$DEPLOY_TCP_PORT" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v bash >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    DEPLOY_TCP_HOST=$DEPLOY_TCP_HOST DEPLOY_TCP_PORT=$DEPLOY_TCP_PORT timeout 5 bash -c 'exec 3<>"/dev/tcp/$DEPLOY_TCP_HOST/$DEPLOY_TCP_PORT"' >/dev/null 2>&1
+    return $?
+  fi
+  return 2
+}
+
+url_host_port() {
+  DEPLOY_URL_VALUE=$1
+  DEPLOY_URL_DEFAULT_PORT=$2
+  DEPLOY_URL_AUTHORITY=${DEPLOY_URL_VALUE#*://}
+  DEPLOY_URL_AUTHORITY=${DEPLOY_URL_AUTHORITY%%/*}
+  DEPLOY_URL_HOSTPORT=${DEPLOY_URL_AUTHORITY##*@}
+  DEPLOY_URL_HOST=${DEPLOY_URL_HOSTPORT%%:*}
+  DEPLOY_URL_PORT=${DEPLOY_URL_HOSTPORT##*:}
+  [ "$DEPLOY_URL_PORT" != "$DEPLOY_URL_HOSTPORT" ] || DEPLOY_URL_PORT=$DEPLOY_URL_DEFAULT_PORT
+  printf '%s %s' "$DEPLOY_URL_HOST" "$DEPLOY_URL_PORT"
+}
+
+check_external_url() {
+  DEPLOY_EXTERNAL_VALUE=$1
+  DEPLOY_EXTERNAL_DEFAULT_PORT=$2
+  DEPLOY_EXTERNAL_NAME=$3
+  DEPLOY_EXTERNAL_PAIR=$(url_host_port "$DEPLOY_EXTERNAL_VALUE" "$DEPLOY_EXTERNAL_DEFAULT_PORT")
+  DEPLOY_EXTERNAL_HOST=${DEPLOY_EXTERNAL_PAIR%% *}
+  DEPLOY_EXTERNAL_PORT=${DEPLOY_EXTERNAL_PAIR##* }
+  if [ -z "$DEPLOY_EXTERNAL_HOST" ] || ! valid_port "$DEPLOY_EXTERNAL_PORT"; then
+    add_probe_error "$DEPLOY_EXTERNAL_NAME URL is invalid."
+    return
+  fi
+  if tcp_reachable "$DEPLOY_EXTERNAL_HOST" "$DEPLOY_EXTERNAL_PORT"; then
+    return
+  else
+    DEPLOY_EXTERNAL_STATUS=$?
+  fi
+  if [ "$DEPLOY_EXTERNAL_STATUS" -eq 2 ]; then
+    add_probe_warning "$DEPLOY_EXTERNAL_NAME connectivity could not be checked because neither nc nor bash+timeout is available."
+  else
+    add_probe_error "$DEPLOY_EXTERNAL_NAME is not reachable at $DEPLOY_EXTERNAL_HOST:$DEPLOY_EXTERNAL_PORT."
+  fi
+}
+
+check_container_ownership() {
+  DEPLOY_OWNERSHIP_LINES=$(docker ps -a --filter "label=com.docker.compose.project=$ASCNUCC_COMPOSE_PROJECT" --format '{{.ID}}|{{.Label "io.ascnucc.deployment-id"}}' 2>/dev/null || true)
+  [ -z "$DEPLOY_OWNERSHIP_LINES" ] && return 0
+  printf '%s\n' "$DEPLOY_OWNERSHIP_LINES" | while IFS='|' read -r DEPLOY_CONTAINER_ID DEPLOY_CONTAINER_OWNER; do
+    if [ "$DEPLOY_CONTAINER_OWNER" != "$ASCNUCC_DEPLOYMENT_ID" ]; then
+      printf '%s\n' "$DEPLOY_CONTAINER_ID"
+    fi
+  done | grep -q . && return 1
+  return 0
+}
+
+resource_owned_or_absent() {
+  DEPLOY_RESOURCE_KIND=$1
+  DEPLOY_RESOURCE_NAME=$2
+  if ! DEPLOY_RESOURCE_OWNER=$(docker "$DEPLOY_RESOURCE_KIND" inspect --format '{{with .Labels}}{{index . "io.ascnucc.deployment-id"}}{{end}}' "$DEPLOY_RESOURCE_NAME" 2>/dev/null); then
+    return 0
+  fi
+  [ "$DEPLOY_RESOURCE_OWNER" = "$ASCNUCC_DEPLOYMENT_ID" ]
+}
+
+check_deployment_ownership() {
+  check_container_ownership || return 1
+  if has_role web || has_role cms; then
+    resource_owned_or_absent network "${ASCNUCC_COMPOSE_PROJECT}_app" || return 1
+  fi
+  if has_role cms || has_role data; then
+    resource_owned_or_absent network "${ASCNUCC_COMPOSE_PROJECT}_data" || return 1
+  fi
+  if has_role data && [ "${ASCNUCC_DATA_STORAGE:-}" = docker ]; then
+    resource_owned_or_absent volume "${ASCNUCC_COMPOSE_PROJECT}_postgres_data" || return 1
+    resource_owned_or_absent volume "${ASCNUCC_COMPOSE_PROJECT}_minio_data" || return 1
+  fi
+}
+
+probe_command() {
+  load_configuration
+  DEPLOY_PROBE_ERRORS=0
+  DEPLOY_PROBE_WARNINGS=0
+  DEPLOY_PROBE_ERROR_TEXT=
+  DEPLOY_PROBE_WARNING_TEXT=
+
+  [ "${ASCNUCC_CONFIG_SCHEMA:-}" = "$DEPLOY_SCHEMA" ] || add_probe_error "Unsupported configuration schema: ${ASCNUCC_CONFIG_SCHEMA:-missing}."
+  [ -n "${ASCNUCC_DEPLOYMENT_ID:-}" ] || add_probe_error 'Deployment ID is missing.'
+  [ -n "${ASCNUCC_COMPOSE_PROJECT:-}" ] || add_probe_error 'Compose project is missing.'
+  printf '%s' "${ASCNUCC_DEPLOYMENT_ID:-}" | grep -Eq '^ascnucc-[0-9a-f]{12}$' || add_probe_error 'Deployment ID has an invalid format.'
+  printf '%s' "${ASCNUCC_COMPOSE_PROJECT:-}" | grep -Eq '^ascnucc_[0-9a-f]{12}$' || add_probe_error 'Compose project has an invalid format.'
+  valid_environment "${ASCNUCC_ENVIRONMENT:-}" || add_probe_error 'Environment must be production or demo.'
+  valid_release "${ASCNUCC_RELEASE:-}" || add_probe_error 'Release must be latest or an exact semantic version.'
+  ASCNUCC_ROLES=$(normalize_roles "${ASCNUCC_ROLES:-}")
+  export ASCNUCC_ROLES
+
+  [ -f "$DEPLOY_COMPOSE_FILE" ] || add_probe_error 'compose.deploy.yaml is missing from the deployment bundle.'
+  if command -v stat >/dev/null 2>&1; then
+    DEPLOY_CONFIG_MODE=$(stat -c '%a' "$DEPLOY_CONFIG_FILE" 2>/dev/null || true)
+    [ "$DEPLOY_CONFIG_MODE" = 600 ] || add_probe_error "Deployment configuration must have mode 600 (found ${DEPLOY_CONFIG_MODE:-unknown})."
+    DEPLOY_CONFIG_DIR_MODE=$(stat -c '%a' "$DEPLOY_CONFIG_DIR" 2>/dev/null || true)
+    [ "$DEPLOY_CONFIG_DIR_MODE" = 700 ] || add_probe_error "Deployment configuration directory must have mode 700 (found ${DEPLOY_CONFIG_DIR_MODE:-unknown})."
+    if [ "${ASCNUCC_REGISTRY_AUTH_MODE:-}" = dedicated ] && [ -f "$DEPLOY_DOCKER_CONFIG_DIR/config.json" ]; then
+      DEPLOY_DOCKER_CONFIG_MODE=$(stat -c '%a' "$DEPLOY_DOCKER_CONFIG_DIR/config.json" 2>/dev/null || true)
+      [ "$DEPLOY_DOCKER_CONFIG_MODE" = 600 ] || add_probe_error "Dedicated Docker config must have mode 600 (found ${DEPLOY_DOCKER_CONFIG_MODE:-unknown})."
+    fi
+  else
+    add_probe_warning 'File modes could not be checked because stat is unavailable.'
+  fi
+
+  command -v docker >/dev/null 2>&1 || add_probe_error 'Docker CLI is unavailable.'
+  if command -v docker >/dev/null 2>&1; then
+    docker info >/dev/null 2>&1 || add_probe_error 'Docker daemon is unavailable to the current user.'
+    compose_version_ok || add_probe_error "Docker Compose $DEPLOY_MIN_COMPOSE_MAJOR.$DEPLOY_MIN_COMPOSE_MINOR or newer is required."
+  fi
+
+  DEPLOY_ARCH=$(uname -m 2>/dev/null || true)
+  case "$DEPLOY_ARCH" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *) add_probe_error "Unsupported CPU architecture: ${DEPLOY_ARCH:-unknown}; supported: amd64, arm64." ;;
+  esac
+
+  if ! ip_is_local "${ASCNUCC_APP_BIND_IP:-127.0.0.1}"; then add_probe_error "Application bind IP is not assigned to this host: ${ASCNUCC_APP_BIND_IP:-missing}."; fi
+  if has_role data && ! ip_is_local "${ASCNUCC_DATA_BIND_IP:-127.0.0.1}"; then add_probe_error "Data bind IP is not assigned to this host: ${ASCNUCC_DATA_BIND_IP:-missing}."; fi
+
+  has_role web && check_port "$ASCNUCC_WEB_PORT" Web
+  has_role cms && check_port "$ASCNUCC_CMS_PORT" CMS
+  if has_role data; then
+    check_port "$ASCNUCC_POSTGRES_PORT" PostgreSQL
+    check_port "$ASCNUCC_MINIO_PORT" 'MinIO API'
+    check_port "$ASCNUCC_MINIO_CONSOLE_PORT" 'MinIO console'
+    if [ "${ASCNUCC_DATA_STORAGE:-}" = bind ]; then
+      validate_custom_data_root "$ASCNUCC_DATA_ROOT"
+      for DEPLOY_DATA_PATH in "$ASCNUCC_POSTGRES_DATA_SOURCE" "$ASCNUCC_MINIO_DATA_SOURCE"; do
+        [ -d "$DEPLOY_DATA_PATH" ] || add_probe_error "Data directory does not exist: $DEPLOY_DATA_PATH."
+        [ -w "$DEPLOY_DATA_PATH" ] || add_probe_error "Data directory is not writable: $DEPLOY_DATA_PATH."
+      done
+      [ ! -d "$ASCNUCC_DATA_ROOT" ] || check_free_space "$ASCNUCC_DATA_ROOT" 'custom data filesystem'
+    elif [ "${ASCNUCC_DATA_STORAGE:-}" = docker ]; then
+      DEPLOY_DOCKER_ROOT=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+      if [ -n "$DEPLOY_DOCKER_ROOT" ] && [ -e "$DEPLOY_DOCKER_ROOT" ]; then
+        check_free_space "$DEPLOY_DOCKER_ROOT" 'Docker data filesystem'
+      else
+        add_probe_warning 'Docker data filesystem free space could not be checked from this account.'
+      fi
+    else
+      add_probe_error 'Data storage must be docker or bind.'
+    fi
+  fi
+
+  if has_role cms; then
+    [ -n "${DATABASE_URL:-}" ] || add_probe_error 'DATABASE_URL is required for the CMS role.'
+    [ -n "${PAYLOAD_SECRET:-}" ] || add_probe_error 'PAYLOAD_SECRET is required for the CMS role.'
+    [ -n "${MEDIA_S3_ENDPOINT:-}" ] || add_probe_error 'S3 endpoint is required for the CMS role.'
+    [ -n "${MEDIA_S3_REGION:-}" ] || add_probe_error 'S3 region is required for the CMS role.'
+    [ -n "${MEDIA_S3_BUCKET:-}" ] || add_probe_error 'S3 bucket is required for the CMS role.'
+    [ -n "${MEDIA_S3_ACCESS_KEY_ID:-}" ] || add_probe_error 'S3 access key is required for the CMS role.'
+    [ -n "${MEDIA_S3_SECRET_ACCESS_KEY:-}" ] || add_probe_error 'S3 secret key is required for the CMS role.'
+    if ! has_role data; then
+      [ -z "${DATABASE_URL:-}" ] || check_external_url "$DATABASE_URL" 5432 'External PostgreSQL'
+      [ -z "${MEDIA_S3_ENDPOINT:-}" ] || {
+        case "$MEDIA_S3_ENDPOINT" in https://*) DEPLOY_S3_DEFAULT_PORT=443 ;; *) DEPLOY_S3_DEFAULT_PORT=80 ;; esac
+        check_external_url "$MEDIA_S3_ENDPOINT" "$DEPLOY_S3_DEFAULT_PORT" 'External S3'
+      }
+    fi
+  fi
+  if has_role web; then
+    [ -n "${CMS_API_URL:-}" ] || add_probe_error 'CMS_API_URL is required for the Web role.'
+    if ! has_role cms && [ -n "${CMS_API_URL:-}" ]; then
+      case "$CMS_API_URL" in https://*) DEPLOY_CMS_DEFAULT_PORT=443 ;; *) DEPLOY_CMS_DEFAULT_PORT=80 ;; esac
+      check_external_url "$CMS_API_URL" "$DEPLOY_CMS_DEFAULT_PORT" 'External CMS API'
+    fi
+  fi
+
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    check_deployment_ownership || add_probe_error 'The Compose project resources include containers, networks, or volumes that do not belong to this deployment.'
+    if has_role web && ! registry_access_ok web; then add_probe_error 'Web image or private GHCR authentication is unavailable.'; fi
+    if has_role cms && ! registry_access_ok cms; then add_probe_error 'CMS image or private GHCR authentication is unavailable.'; fi
+    if has_role data; then
+      docker_cli manifest inspect "$ASCNUCC_POSTGRES_IMAGE" >/dev/null 2>&1 || add_probe_error 'The pinned PostgreSQL image is unavailable through the configured registry/proxy.'
+      docker_cli manifest inspect "$ASCNUCC_MINIO_IMAGE" >/dev/null 2>&1 || add_probe_error 'The pinned MinIO image is unavailable through the configured registry/proxy.'
+      docker_cli manifest inspect "$ASCNUCC_MC_IMAGE" >/dev/null 2>&1 || add_probe_error 'The pinned MinIO client image is unavailable through the configured registry/proxy.'
+    fi
+    if [ -f "$DEPLOY_COMPOSE_FILE" ]; then
+      if [ -z "${ASCNUCC_WEB_IMAGE:-}" ] && has_role web; then ASCNUCC_WEB_IMAGE=$(image_reference web "$ASCNUCC_RELEASE"); export ASCNUCC_WEB_IMAGE; fi
+      if [ -z "${ASCNUCC_CMS_IMAGE:-}" ] && has_role cms; then ASCNUCC_CMS_IMAGE=$(image_reference cms "$ASCNUCC_RELEASE"); export ASCNUCC_CMS_IMAGE; fi
+      compose_cmd config -q >/dev/null 2>&1 || add_probe_error 'Deployment Compose configuration is invalid for the selected roles.'
+    fi
+  fi
+
+  if [ "$DEPLOY_PROBE_ERRORS" -gt 0 ]; then
+    printf 'Probe blocked by %s item(s):%b\n' "$DEPLOY_PROBE_ERRORS" "$DEPLOY_PROBE_ERROR_TEXT" >&2
+    [ "$DEPLOY_PROBE_WARNINGS" -eq 0 ] || printf 'Warnings:%b\n' "$DEPLOY_PROBE_WARNING_TEXT" >&2
+    printf 'NEXT: Fix the listed items, then run ./deploy probe\n' >&2
+    return 1
+  fi
+  say "Probe passed for roles: $ASCNUCC_ROLES"
+  [ "$DEPLOY_PROBE_WARNINGS" -eq 0 ] || printf 'Warnings:%b\n' "$DEPLOY_PROBE_WARNING_TEXT" >&2
+}
+
+acquire_lock() {
+  mkdir -p "$DEPLOY_CONFIG_DIR"
+  if ! mkdir "$DEPLOY_LOCK_DIR" 2>/dev/null; then
+    fail "Another deployment update is running or a stale lock exists." "After confirming no deployment process is active, run: rmdir '$DEPLOY_LOCK_DIR'"
+  fi
+  trap 'rmdir "$DEPLOY_LOCK_DIR" 2>/dev/null || true' EXIT HUP INT TERM
+}
+
+release_lock() {
+  rmdir "$DEPLOY_LOCK_DIR" 2>/dev/null || true
+  trap - EXIT HUP INT TERM
+}
+
+inspect_image() {
+  DEPLOY_INSPECT_REF=$1
+  docker_cli image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}|{{index .Config.Labels "org.opencontainers.image.revision"}}|{{index .Config.Labels "io.ascnucc.component"}}|{{index .RepoDigests 0}}|{{.Architecture}}' "$DEPLOY_INSPECT_REF" 2>/dev/null
+}
+
+run_redacted() {
+  DEPLOY_REDACT_LOG="$DEPLOY_CONFIG_DIR/command-output.$$"
+  if "$@" > "$DEPLOY_REDACT_LOG" 2>&1; then
+    DEPLOY_REDACT_STATUS=0
+  else
+    DEPLOY_REDACT_STATUS=$?
+  fi
+  if [ "$DEPLOY_REDACT_STATUS" -eq 0 ]; then redact_stream < "$DEPLOY_REDACT_LOG"; else redact_stream < "$DEPLOY_REDACT_LOG" >&2; fi
+  rm -f "$DEPLOY_REDACT_LOG"
+  return "$DEPLOY_REDACT_STATUS"
+}
+
+prepare_images() {
+  DEPLOY_PREPARE_RELEASE=$1
+  DEPLOY_CANDIDATE_WEB_IMAGE=
+  DEPLOY_CANDIDATE_CMS_IMAGE=
+  DEPLOY_CANDIDATE_VERSION=
+  DEPLOY_CANDIDATE_REVISION=
+  for DEPLOY_PREPARE_COMPONENT in web cms; do
+    if ! has_role "$DEPLOY_PREPARE_COMPONENT"; then continue; fi
+    DEPLOY_PREPARE_REF=$(image_reference "$DEPLOY_PREPARE_COMPONENT" "$DEPLOY_PREPARE_RELEASE")
+    step "Pull $DEPLOY_PREPARE_COMPONENT image"
+    run_redacted docker_cli pull "$DEPLOY_PREPARE_REF" || fail "Failed to pull the $DEPLOY_PREPARE_COMPONENT image." "Run ./deploy init to refresh GHCR authentication, then retry."
+    DEPLOY_PREPARE_META=$(inspect_image "$DEPLOY_PREPARE_REF") || fail "Cannot inspect the pulled $DEPLOY_PREPARE_COMPONENT image." "Run ./deploy probe"
+    DEPLOY_PREPARE_VERSION=$(printf '%s' "$DEPLOY_PREPARE_META" | cut -d '|' -f 1)
+    DEPLOY_PREPARE_REVISION=$(printf '%s' "$DEPLOY_PREPARE_META" | cut -d '|' -f 2)
+    DEPLOY_PREPARE_LABEL=$(printf '%s' "$DEPLOY_PREPARE_META" | cut -d '|' -f 3)
+    DEPLOY_PREPARE_DIGEST=$(printf '%s' "$DEPLOY_PREPARE_META" | cut -d '|' -f 4)
+    DEPLOY_PREPARE_ARCH=$(printf '%s' "$DEPLOY_PREPARE_META" | cut -d '|' -f 5)
+    [ "$DEPLOY_PREPARE_LABEL" = "$DEPLOY_PREPARE_COMPONENT" ] || fail "The pulled image has the wrong ASCNUCC component label." "Select an official ASCNUCC Release."
+    [ -n "$DEPLOY_PREPARE_VERSION" ] && [ -n "$DEPLOY_PREPARE_REVISION" ] && [ -n "$DEPLOY_PREPARE_DIGEST" ] || fail "The pulled image is missing release metadata or digest." "Select an official ASCNUCC Release."
+    if [ "$DEPLOY_PREPARE_RELEASE" != latest ] && [ "$DEPLOY_PREPARE_VERSION" != "$DEPLOY_PREPARE_RELEASE" ]; then
+      fail "The pulled image metadata does not match the requested Release." "Wait for the Release workflow to finish, then retry the exact version."
+    fi
+    case "$(uname -m):$DEPLOY_PREPARE_ARCH" in
+      x86_64:amd64|amd64:amd64|aarch64:arm64|arm64:arm64) ;;
+      *) fail "The pulled image architecture does not match this host." "Use an official ASCNUCC image for amd64 or arm64." ;;
+    esac
+    if [ -n "$DEPLOY_CANDIDATE_VERSION" ]; then
+      [ "$DEPLOY_CANDIDATE_VERSION" = "$DEPLOY_PREPARE_VERSION" ] && [ "$DEPLOY_CANDIDATE_REVISION" = "$DEPLOY_PREPARE_REVISION" ] || fail "Web and CMS images are from different releases." "Wait for the Release workflow to finish, then run ./deploy update again."
+    else
+      DEPLOY_CANDIDATE_VERSION=$DEPLOY_PREPARE_VERSION
+      DEPLOY_CANDIDATE_REVISION=$DEPLOY_PREPARE_REVISION
+    fi
+    if [ "$DEPLOY_PREPARE_COMPONENT" = web ]; then
+      DEPLOY_CANDIDATE_WEB_IMAGE=$DEPLOY_PREPARE_DIGEST
+    else
+      DEPLOY_CANDIDATE_CMS_IMAGE=$DEPLOY_PREPARE_DIGEST
+    fi
+  done
+  export DEPLOY_CANDIDATE_WEB_IMAGE DEPLOY_CANDIDATE_CMS_IMAGE DEPLOY_CANDIDATE_VERSION DEPLOY_CANDIDATE_REVISION
+}
+
+use_candidate_images() {
+  if has_role web; then ASCNUCC_WEB_IMAGE=$DEPLOY_CANDIDATE_WEB_IMAGE; export ASCNUCC_WEB_IMAGE; fi
+  if has_role cms; then ASCNUCC_CMS_IMAGE=$DEPLOY_CANDIDATE_CMS_IMAGE; export ASCNUCC_CMS_IMAGE; fi
+}
+
+write_active_state() {
+  DEPLOY_STATE_RELEASE=$1
+  DEPLOY_STATE_TMP="$DEPLOY_CONFIG_DIR/state.env.new.$$"
+  : > "$DEPLOY_STATE_TMP"
+  config_write_line "$DEPLOY_STATE_TMP" ASCNUCC_ACTIVE_RELEASE_REQUEST "$DEPLOY_STATE_RELEASE"
+  config_write_line "$DEPLOY_STATE_TMP" ASCNUCC_ACTIVE_VERSION "$DEPLOY_CANDIDATE_VERSION"
+  config_write_line "$DEPLOY_STATE_TMP" ASCNUCC_ACTIVE_REVISION "$DEPLOY_CANDIDATE_REVISION"
+  config_write_line "$DEPLOY_STATE_TMP" ASCNUCC_MIGRATED_REVISION "$DEPLOY_CANDIDATE_REVISION"
+  config_write_line "$DEPLOY_STATE_TMP" ASCNUCC_WEB_IMAGE "$DEPLOY_CANDIDATE_WEB_IMAGE"
+  config_write_line "$DEPLOY_STATE_TMP" ASCNUCC_CMS_IMAGE "$DEPLOY_CANDIDATE_CMS_IMAGE"
+  chmod 600 "$DEPLOY_STATE_TMP"
+  mv "$DEPLOY_STATE_TMP" "$DEPLOY_STATE_FILE"
+}
+
+confirm_production_migration() {
+  [ "$ASCNUCC_ENVIRONMENT" != production ] || {
+    require_interactive
+    say 'Production migration gate:'
+    say '  - Confirm the database is empty, or PostgreSQL and object storage have a coordinated backup.'
+    say '  - Database migrations are forward-only; an arbitrary application rollback is not promised.'
+    printf 'Type deployment ID %s to continue: ' "$ASCNUCC_DEPLOYMENT_ID" >&2
+    IFS= read -r DEPLOY_CONFIRMATION
+    [ "$DEPLOY_CONFIRMATION" = "$ASCNUCC_DEPLOYMENT_ID" ] || fail "Production migration was not confirmed." "Verify the backup, then run the command again."
+  }
+}
+
+start_data_services() {
+  if ! has_role data; then return 0; fi
+  step 'Start PostgreSQL and MinIO'
+  compose_cmd up -d --no-build --wait postgres minio
+  step 'Ensure the private media bucket and least-privilege application user'
+  compose_cmd run --rm --no-deps minio-init >/dev/null
+}
+
+run_migration() {
+  if ! has_role cms; then return 0; fi
+  step 'Run the release migration'
+  run_redacted compose_cmd run --rm --no-deps migrate || fail "Migration failed; the application release was not replaced." "Inspect ./deploy logs cms, then apply a forward fix or coordinate a database/object-storage restore."
+}
+
+start_applications() {
+  if has_role cms; then
+    step 'Start CMS'
+    compose_cmd up -d --no-build --wait cms
+  fi
+  if has_role web; then
+    step 'Start Web'
+    compose_cmd up -d --no-build --wait web
+  fi
+}
+
+production_handoff() {
+  [ "$ASCNUCC_ENVIRONMENT" != production ] || {
+    warn 'Services are running, but production readiness is not complete.'
+    say 'Before real use: establish controlled Owner bootstrap and recovery, TLS/entry routing, coordinated PostgreSQL/S3 backup and restore rehearsal, secret rotation, real-device acceptance, and privacy/data-location approval.'
+  }
+}
+
+up_command() {
+  load_configuration
+  probe_command
+  acquire_lock
+  if has_role web || has_role cms; then
+    if [ -z "${ASCNUCC_ACTIVE_REVISION:-}" ]; then
+      prepare_images "$ASCNUCC_RELEASE"
+      use_candidate_images
+      confirm_production_migration
+      start_data_services
+      run_migration
+      start_applications
+      write_active_state "$ASCNUCC_RELEASE"
+    else
+      step "Use recorded release ${ASCNUCC_ACTIVE_VERSION:-unknown}"
+      start_data_services
+      start_applications
+    fi
+  else
+    start_data_services
+  fi
+  release_lock
+  say 'ASCNUCC is running. Next: ./deploy status'
+  production_handoff
+}
+
+update_command() {
+  load_configuration
+  has_role web || has_role cms || fail "The data-only role has no ASCNUCC application image to update." "Use ./deploy status"
+  DEPLOY_UPDATE_RELEASE=${1:-latest}
+  valid_release "$DEPLOY_UPDATE_RELEASE" || fail "Release must be latest or an exact semantic version." "Use ./deploy update or ./deploy update v1.0.0"
+  probe_command
+  acquire_lock
+  prepare_images "$DEPLOY_UPDATE_RELEASE"
+  if [ "${ASCNUCC_ACTIVE_REVISION:-}" = "$DEPLOY_CANDIDATE_REVISION" ] && \
+    { ! has_role web || [ "${ASCNUCC_WEB_IMAGE:-}" = "$DEPLOY_CANDIDATE_WEB_IMAGE" ]; } && \
+    { ! has_role cms || [ "${ASCNUCC_CMS_IMAGE:-}" = "$DEPLOY_CANDIDATE_CMS_IMAGE" ]; }; then
+    release_lock
+    say "Already running the selected release: $DEPLOY_CANDIDATE_VERSION"
+    return 0
+  fi
+  use_candidate_images
+  step 'Update plan'
+  say "Current: ${ASCNUCC_ACTIVE_VERSION:-not deployed}"
+  say "Target: $DEPLOY_CANDIDATE_VERSION"
+  say 'Order: data health -> migration -> CMS -> Web'
+  confirm_production_migration
+  start_data_services
+  run_migration
+  start_applications
+  write_active_state "$DEPLOY_UPDATE_RELEASE"
+  release_lock
+  say "Update complete: $DEPLOY_CANDIDATE_VERSION"
+  production_handoff
+}
+
+assert_managed_containers() {
+  check_deployment_ownership || fail "The Compose project includes containers, networks, or volumes not owned by this deployment." "Run ./deploy doctor and resolve the project-name collision."
+}
+
+start_command() {
+  load_configuration
+  assert_managed_containers
+  set_compose_scope
+  step 'Start existing ASCNUCC containers'
+  # DEPLOY_SELECTED_SERVICES contains only fixed service names.
+  # shellcheck disable=SC2086
+  compose_cmd start $DEPLOY_SELECTED_SERVICES || fail "One or more containers do not exist yet." "Run ./deploy up"
+  say 'ASCNUCC containers started.'
+}
+
+stop_command() {
+  load_configuration
+  assert_managed_containers
+  set_compose_scope
+  step 'Stop ASCNUCC containers without deleting data'
+  # shellcheck disable=SC2086
+  compose_cmd stop $DEPLOY_SELECTED_SERVICES
+  say 'ASCNUCC containers stopped. Docker volumes and files were kept.'
+}
+
+restart_command() {
+  load_configuration
+  assert_managed_containers
+  set_compose_scope
+  step 'Restart existing ASCNUCC containers'
+  # shellcheck disable=SC2086
+  compose_cmd restart $DEPLOY_SELECTED_SERVICES
+  say 'ASCNUCC containers restarted.'
+}
+
+status_command() {
+  load_configuration
+  assert_managed_containers
+  set_compose_scope
+  say "Deployment: $ASCNUCC_DEPLOYMENT_ID"
+  say "Configured roles: $ASCNUCC_ROLES"
+  say "Active release: ${ASCNUCC_ACTIVE_VERSION:-not deployed}"
+  # shellcheck disable=SC2086
+  compose_cmd ps $DEPLOY_SELECTED_SERVICES
+}
+
+logs_command() {
+  load_configuration
+  assert_managed_containers
+  DEPLOY_LOG_SERVICE=${1:-}
+  if [ -n "$DEPLOY_LOG_SERVICE" ]; then
+    case "$DEPLOY_LOG_SERVICE" in
+      web) has_role web || fail "Web is not part of this deployment." "Run ./deploy status" ;;
+      cms) has_role cms || fail "CMS is not part of this deployment." "Run ./deploy status" ;;
+      postgres|minio) has_role data || fail "$DEPLOY_LOG_SERVICE is not part of this deployment." "Run ./deploy status" ;;
+      *) fail "Unknown log service: $DEPLOY_LOG_SERVICE" "Use web, cms, postgres, or minio."
+    esac
+    run_redacted compose_cmd logs --tail 200 "$DEPLOY_LOG_SERVICE"
+  else
+    set_compose_scope
+    # shellcheck disable=SC2086
+    run_redacted compose_cmd logs --tail 200 $DEPLOY_SELECTED_SERVICES
+  fi
+}
+
+doctor_command() {
+  load_configuration
+  step 'Fast deployment probe'
+  probe_command
+  step 'Container ownership and health'
+  assert_managed_containers
+  status_command
+  if has_role cms && [ -n "${ASCNUCC_CMS_IMAGE:-}" ]; then
+    step 'Migration status'
+    run_redacted compose_cmd run --rm --no-deps migrate pnpm --dir apps/cms migrate:status
+  fi
+  if [ -d "$DEPLOY_LOCK_DIR" ]; then
+    warn "An update lock exists at $DEPLOY_LOCK_DIR."
+  fi
+  production_handoff
+  say 'Doctor checks completed.'
+}
+
+seed_command() {
+  load_configuration
+  [ "${1:-}" = --demo ] || fail "Seed requires the explicit --demo flag." "Use ./deploy seed --demo only for a disposable fictional Demo deployment."
+  [ "$ASCNUCC_ENVIRONMENT" = demo ] || fail "Demo seed is forbidden outside the demo environment." "Create a separate demo deployment with ./deploy init."
+  has_role cms && has_role data || fail "Demo seed requires CMS and the deployment-managed PostgreSQL service." "Use an all or cms,data demo deployment."
+  [ "$POSTGRES_DB" = ascnucc_demo_dev ] || fail "Demo seed requires the fixed ascnucc_demo_dev database." "Do not seed this database."
+  case "$DATABASE_URL" in
+    postgres://*@postgres:5432/ascnucc_demo_dev) ;;
+    *) fail "Demo seed is not connected to the managed demo database." "Do not seed this database." ;;
+  esac
+  [ -n "${ASCNUCC_CMS_IMAGE:-}" ] || fail "No deployed CMS release is recorded." "Run ./deploy up"
+  acquire_lock
+  step 'Seed fictional Demo data'
+  ASCNUCC_DEPLOYMENT_DEMO_SEED=true
+  export ASCNUCC_DEPLOYMENT_DEMO_SEED
+  run_redacted compose_cmd run --rm --no-deps \
+    -e ASCNUCC_DEPLOYMENT_DEMO_SEED \
+    -e ASCNUCC_ENVIRONMENT \
+    -e DEMO_ADMIN_USERNAME -e DEMO_ADMIN_PASSWORD \
+    -e DEMO_STAFF_USERNAME -e DEMO_STAFF_PASSWORD \
+    -e DEMO_CADRE_USERNAME -e DEMO_CADRE_PASSWORD \
+    migrate pnpm --dir apps/cms seed || fail "Demo seed failed." "Run ./deploy doctor"
+  release_lock
+  say 'Fictional Demo data is ready. Credentials remain only in the protected local configuration.'
+}
+
+help_command() {
+  cat <<'EOF'
+ASCNUCC portable deployment tool
+
+Usage:
+  ./deploy init                 Guided first-time setup or GHCR login refresh
+  ./deploy probe                Fast, read-only role-aware environment checks
+  ./deploy up                   Pull/prepare the configured release and start it
+  ./deploy update [release]     Update to latest, or to an exact vX.Y.Z release
+  ./deploy start                Start existing containers
+  ./deploy stop                 Stop containers without deleting data
+  ./deploy restart              Restart existing containers
+  ./deploy status               Show the active release and container state
+  ./deploy logs [service]       Show the last 200 redacted log lines
+  ./deploy doctor               Run deeper health and migration checks
+  ./deploy seed --demo          Explicitly load fictional Demo data
+  ./deploy help                 Show this guide
+
+Roles:
+  all       Web + CMS + PostgreSQL + MinIO
+  web       Public Web/BFF only; requires an external CMS URL
+  cms       CMS/API/Runner only; requires external PostgreSQL and private S3
+  data      PostgreSQL + MinIO only
+  cms,data  CMS with deployment-managed data on the same host
+
+Defaults are conservative: loopback listeners, Docker-managed volumes, private
+GHCR images pinned to resolved digests, no automatic Demo seed, and no volume
+deletion.
+init, up, and update run the fast probe automatically; doctor is only for deeper
+troubleshooting, so normal operation does not require a checklist of commands.
+The tool never changes the host firewall, TLS, reverse proxy, Docker daemon,
+DNS, system proxy, Tailscale, or unrelated services.
+EOF
+}
+
+DEPLOY_COMMAND=${1:-help}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$DEPLOY_COMMAND" in
+  init) [ "$#" -eq 0 ] || fail "init takes no arguments." "Run ./deploy help"; init_command ;;
+  probe) [ "$#" -eq 0 ] || fail "probe takes no arguments." "Run ./deploy help"; probe_command ;;
+  up) [ "$#" -eq 0 ] || fail "up takes no arguments." "Run ./deploy help"; up_command ;;
+  update) [ "$#" -le 1 ] || fail "update accepts at most one Release." "Run ./deploy update or ./deploy update v1.0.0"; update_command "${1:-latest}" ;;
+  start) [ "$#" -eq 0 ] || fail "start takes no arguments." "Run ./deploy help"; start_command ;;
+  stop) [ "$#" -eq 0 ] || fail "stop takes no arguments." "Run ./deploy help"; stop_command ;;
+  restart) [ "$#" -eq 0 ] || fail "restart takes no arguments." "Run ./deploy help"; restart_command ;;
+  status) [ "$#" -eq 0 ] || fail "status takes no arguments." "Run ./deploy help"; status_command ;;
+  logs) [ "$#" -le 1 ] || fail "logs accepts at most one service." "Run ./deploy logs cms"; logs_command "${1:-}" ;;
+  doctor) [ "$#" -eq 0 ] || fail "doctor takes no arguments." "Run ./deploy help"; doctor_command ;;
+  seed) [ "$#" -le 1 ] || fail "seed accepts only --demo." "Run ./deploy seed --demo"; seed_command "${1:-}" ;;
+  help|-h|--help) help_command ;;
+  *) fail "Unknown command: $DEPLOY_COMMAND" "Run ./deploy help" ;;
+esac

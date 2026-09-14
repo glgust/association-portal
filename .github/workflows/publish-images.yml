@@ -1,0 +1,245 @@
+name: Publish application images
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-images-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate release
+    runs-on: ubuntu-24.04
+    outputs:
+      image_owner: ${{ steps.release.outputs.image_owner }}
+      revision: ${{ steps.release.outputs.revision }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out the released source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Validate the release tag and source branch
+        id: release
+        shell: bash
+        env:
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_TAG" == v1.0.0 && "$IS_PRERELEASE" != true ]]; then
+            echo '::error::v1.0.0 is the first test release and must be marked as a prerelease.'
+            exit 1
+          fi
+
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag must be a semantic version such as v1.0.0 or v1.0.0-rc.1"
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/$DEFAULT_BRANCH"; then
+            echo "::error::The released commit must be contained in $DEFAULT_BRANCH"
+            exit 1
+          fi
+
+          {
+            echo "image_owner=${REPOSITORY_OWNER,,}"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "version=$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify source
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the released source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Run repository checks in the build environment
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Containerfile
+          target: verify
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=ascnucc-verify
+          cache-to: type=gha,mode=max,scope=ascnucc-verify
+
+  prebuild:
+    name: Prebuild ${{ matrix.component }} image
+    needs: [prepare, verify]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [web, cms]
+    steps:
+      - name: Check out the released source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build without publishing
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Containerfile
+          target: ${{ matrix.component }}
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=association-portal-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=association-portal-${{ matrix.component }}
+
+  publish:
+    name: Publish ${{ matrix.component }} image
+    needs: [prepare, prebuild]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [web, cms]
+    steps:
+      - name: Check out the released source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image metadata
+        id: metadata
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ needs.prepare.outputs.image_owner }}/association-portal-${{ matrix.component }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=sha-${{ needs.prepare.outputs.revision }}
+          labels: |
+            org.opencontainers.image.title=ASCNUCC ${{ matrix.component }}
+            org.opencontainers.image.description=ASCNUCC ${{ matrix.component }} application image
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.url=${{ github.event.release.html_url }}
+            org.opencontainers.image.created=${{ github.event.release.published_at }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.revision }}
+            io.ascnucc.component=${{ matrix.component }}
+
+      - name: Build and publish the image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Containerfile
+          target: ${{ matrix.component }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=association-portal-${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=association-portal-${{ matrix.component }}
+
+      - name: Record the published digest
+        shell: bash
+        env:
+          COMPONENT: ${{ matrix.component }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_OWNER: ${{ needs.prepare.outputs.image_owner }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          {
+            echo "### ASCNUCC $COMPONENT"
+            echo
+            echo "- Image: \`ghcr.io/$IMAGE_OWNER/association-portal-$COMPONENT:$VERSION\`"
+            echo "- Digest: \`$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-stable:
+    name: Promote current latest stable release
+    needs: [prepare, publish]
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Confirm this is still the latest stable GitHub Release
+        id: latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          latest_version=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
+            echo 'promote=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'promote=false' >> "$GITHUB_OUTPUT"
+            echo "Skip stable promotion: current latest stable Release is $latest_version"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.latest.outputs.promote == 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        if: steps.latest.outputs.promote == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote Web and CMS manifests to stable
+        if: steps.latest.outputs.promote == 'true'
+        shell: bash
+        env:
+          IMAGE_OWNER: ${{ needs.prepare.outputs.image_owner }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          for component in web cms; do
+            image="ghcr.io/$IMAGE_OWNER/association-portal-$component"
+            docker buildx imagetools create --tag "$image:stable" "$image:$RELEASE_VERSION"
+          done

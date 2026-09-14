@@ -1,0 +1,33 @@
+.activation {
+  border-top: 1px solid var(--theme-elevation-150);
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+}
+
+.activation form,
+.activation label {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.activation form {
+  gap: 1rem;
+}
+
+.activation input {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
+.activation :focus-visible {
+  outline: 3px solid var(--theme-elevation-800);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activation * {
+    transition-duration: 0.01ms !important;
+  }
+}

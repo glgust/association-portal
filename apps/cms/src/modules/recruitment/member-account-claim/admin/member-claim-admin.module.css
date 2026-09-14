@@ -1,0 +1,137 @@
+.page {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: clamp(1rem, 3vw, 2.5rem);
+  overflow-wrap: anywhere;
+}
+.page * {
+  box-sizing: border-box;
+}
+.eyebrow {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+.feedback {
+  min-height: 1.5rem;
+}
+.layout,
+.authGrid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(16rem, 0.8fr) minmax(0, 2fr);
+}
+.panel,
+.credential,
+.guidance {
+  background: var(--theme-elevation-0);
+  border: 1px solid var(--theme-elevation-150);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  min-width: 0;
+}
+.guidance {
+  margin: 1rem 0;
+}
+.guidance h2,
+.guidance p {
+  margin: 0;
+}
+.guidance p {
+  margin-top: 0.5rem;
+}
+.credential {
+  border-left: 0.35rem solid var(--theme-warning-500);
+  margin: 1rem 0;
+}
+.credential code {
+  display: block;
+  padding: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.queue {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.queue button {
+  display: grid;
+  gap: 0.25rem;
+  text-align: left;
+  width: 100%;
+  padding: 0.75rem;
+}
+.queue span,
+.page dt {
+  color: var(--theme-elevation-650);
+  font-size: 0.85rem;
+}
+.facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.facts dd {
+  margin: 0.2rem 0;
+}
+.authGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1rem 0;
+}
+.warning {
+  display: flex;
+  gap: 0.6rem;
+  border-left: 0.3rem solid var(--theme-warning-500);
+  padding: 0.8rem;
+}
+.page fieldset,
+.page label {
+  display: grid;
+  gap: 0.4rem;
+  margin: 1rem 0;
+}
+.field {
+  display: grid;
+  gap: 0.4rem;
+  margin: 1rem 0;
+}
+.page input,
+.page select {
+  font: inherit;
+  max-width: 100%;
+  padding: 0.6rem;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.overrideEditor {
+  border: 1px solid var(--theme-elevation-150);
+  padding: 0.75rem;
+}
+.page button:focus-visible,
+.page input:focus-visible,
+.page select:focus-visible {
+  outline: 3px solid var(--theme-elevation-800);
+  outline-offset: 2px;
+}
+@media (max-width: 700px) {
+  .layout,
+  .authGrid,
+  .facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .actions button {
+    width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@ascnucc/web",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev -H 127.0.0.1 -p 3000",
+    "lint": "eslint .",
+    "start": "next start -p 3000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ascnucc/contracts": "workspace:*",
+    "next": "16.3.5",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.9",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "^9.16.0",
+    "eslint-config-next": "16.3.5",
+    "typescript": "5.7.3"
+  },
+  "license": "Apache-2.0"
+}

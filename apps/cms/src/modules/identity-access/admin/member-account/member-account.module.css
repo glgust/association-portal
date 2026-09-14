@@ -1,0 +1,79 @@
+.page {
+  box-sizing: border-box;
+  display: grid;
+  min-height: 70vh;
+  padding: clamp(1rem, 5vw, 3rem);
+  place-items: center;
+}
+
+.memberNav {
+  display: grid;
+  gap: 1rem;
+  padding: 1.5rem 1rem;
+}
+
+.memberNav a {
+  color: inherit;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-decoration-thickness: 0.12em;
+  text-underline-offset: 0.2em;
+}
+
+.memberNav a:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 4px;
+}
+.page * {
+  box-sizing: border-box;
+}
+.card {
+  background: var(--theme-elevation-0);
+  border: 1px solid var(--theme-elevation-150);
+  border-radius: 0.75rem;
+  max-width: 42rem;
+  padding: clamp(1rem, 5vw, 2.5rem);
+  width: 100%;
+}
+.eyebrow {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+.card h1 {
+  font-size: clamp(1.7rem, 8vw, 2.6rem);
+}
+.card dl {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.card dt {
+  color: var(--theme-elevation-650);
+  font-size: 0.85rem;
+}
+.card dd {
+  margin: 0.2rem 0;
+}
+.card a:focus-visible {
+  outline: 3px solid var(--theme-elevation-800);
+  outline-offset: 3px;
+}
+@media (max-width: 390px) {
+  .page {
+    display: block;
+    padding: 1rem;
+  }
+  .card {
+    border-radius: 0.5rem;
+  }
+  .card dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page * {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

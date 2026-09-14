@@ -1,0 +1,675 @@
+.surface {
+  --home-ink: #eef1f7;
+  --home-muted: #9aa5b4;
+  --home-cyan: #9db5c8;
+  --home-brass: #b89b6a;
+  --home-panel: rgb(8 11 17 / 76%);
+  --home-panel-strong: rgb(10 14 22 / 88%);
+  position: relative;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow: clip;
+  color: var(--home-ink);
+  background: #000;
+  isolation: isolate;
+}
+
+.surface a {
+  color: inherit;
+}
+
+.surface a:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid #e4a45f;
+  outline-offset: 4px;
+}
+
+.sky {
+  --home-pointer-x: 50%;
+  --home-pointer-y: 38%;
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
+  pointer-events: none;
+  background: #000;
+}
+
+.spaceCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.lamp {
+  position: absolute;
+  inset: 0;
+  mix-blend-mode: screen;
+  background: radial-gradient(
+    380px circle at var(--home-pointer-x) var(--home-pointer-y),
+    rgb(178 198 228 / 7%),
+    rgb(178 198 228 / 2.5%) 42%,
+    transparent 68%
+  );
+}
+
+.contentLayer {
+  position: relative;
+  z-index: 1;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(24rem, 0.95fr);
+  align-items: center;
+  gap: clamp(2.5rem, 6vw, 6rem);
+  width: min(100%, 96rem);
+  min-height: 76svh;
+  margin-inline: auto;
+  padding: clamp(4rem, 10vh, 7rem) clamp(1.5rem, 6vw, 6rem)
+    clamp(3rem, 7vh, 5rem);
+}
+
+.masthead {
+  max-width: 36rem;
+}
+
+.eyebrow,
+.entryTag,
+.sectionKicker,
+.bulletinHeading,
+.bulletinMore,
+.footerMark {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+.eyebrow,
+.entryTag,
+.sectionKicker {
+  margin: 0;
+  color: var(--home-cyan);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+}
+
+.masthead h1 {
+  max-width: 12ch;
+  margin: 1.35rem 0 0.25rem;
+  font-family: 'Songti SC', SimSun, Georgia, serif;
+  font-size: clamp(3rem, 6.5vw, 5.75rem);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0.12em;
+  text-shadow:
+    0 0 1.5rem rgb(160 190 240 / 18%),
+    0 0.15rem 1.25rem rgb(0 0 0 / 60%);
+}
+
+.lead {
+  max-width: 31em;
+  margin: 0;
+  color: #d8dde7;
+  font-size: clamp(1rem, 1.7vw, 1.15rem);
+  line-height: 1.9;
+  text-shadow: 0 0.08rem 0.9rem rgb(0 0 0 / 78%);
+}
+
+.divider {
+  display: block;
+  width: 7.5rem;
+  height: 1.5rem;
+  margin: 1.6rem 0 1.35rem;
+  color: rgb(232 236 244 / 58%);
+  fill: currentColor;
+}
+
+.divider line {
+  opacity: 0.7;
+  stroke: currentColor;
+  stroke-width: 0.5;
+}
+
+.bulletin,
+.entry,
+.richText,
+.contactSection,
+.statusPanel {
+  position: relative;
+  border: 1px solid rgb(232 236 244 / 18%);
+  border-radius: 2px;
+  color: var(--home-ink);
+  background: var(--home-panel);
+  box-shadow:
+    0 1.9rem 3.75rem rgb(0 0 0 / 48%),
+    0 0.25rem 0.9rem rgb(0 0 0 / 32%);
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  backdrop-filter: blur(18px) saturate(1.25);
+}
+
+.bulletin::before,
+.bulletin::after,
+.entry::before,
+.entry::after,
+.richText::before,
+.richText::after,
+.contactSection::before,
+.contactSection::after,
+.statusPanel::before,
+.statusPanel::after {
+  position: absolute;
+  width: 0.65rem;
+  height: 0.65rem;
+  opacity: 0.65;
+  pointer-events: none;
+  content: '';
+}
+
+.bulletin::before,
+.entry::before,
+.richText::before,
+.contactSection::before,
+.statusPanel::before {
+  top: -1px;
+  left: -1px;
+  border-top: 1px solid #e8ecf4;
+  border-left: 1px solid #e8ecf4;
+}
+
+.bulletin::after,
+.entry::after,
+.richText::after,
+.contactSection::after,
+.statusPanel::after {
+  right: -1px;
+  bottom: -1px;
+  border-right: 1px solid #e8ecf4;
+  border-bottom: 1px solid #e8ecf4;
+}
+
+.bulletin {
+  width: 100%;
+  max-width: 31rem;
+  justify-self: end;
+  padding: 1.5rem 1.5rem 0.8rem;
+  background: rgb(10 14 22 / 62%);
+}
+
+.bulletinHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+}
+
+.bulletinHeading h2 {
+  margin: 0;
+  color: var(--home-cyan);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.bulletinHeading span {
+  color: rgb(232 236 244 / 48%);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+}
+
+.rule {
+  display: block;
+  height: 1px;
+  margin: 0.9rem 0 0.15rem;
+  background: linear-gradient(
+    90deg,
+    rgb(232 236 244 / 38%),
+    rgb(232 236 244 / 5%)
+  );
+  transform-origin: left;
+}
+
+.announcementList,
+.contactList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.announcementList li {
+  border-top: 1px solid rgb(232 236 244 / 10%);
+}
+
+.announcementList a {
+  display: grid;
+  grid-template-columns: 6.6rem minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: baseline;
+  padding: 0.8rem 0.35rem;
+  text-decoration: none;
+}
+
+.announcementList a:hover {
+  background: rgb(232 236 244 / 5%);
+}
+
+.announcementList time {
+  color: var(--home-brass);
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.announcementBody {
+  display: block;
+  min-width: 0;
+}
+
+.announcementBody h3,
+.announcementBody span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.announcementBody h3 {
+  margin: 0;
+  color: #f2f4f8;
+  font-family: 'Songti SC', SimSun, Georgia, serif;
+  font-size: 0.98rem;
+  letter-spacing: 0.03em;
+}
+
+.announcementBody span {
+  margin-top: 0.2rem;
+  color: var(--home-muted);
+  font-size: 0.75rem;
+}
+
+.bulletinMore {
+  display: block;
+  padding: 0.85rem 0.35rem 0.2rem;
+  border-top: 1px solid rgb(232 236 244 / 10%);
+  color: #aab3c0;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-align: right;
+  text-decoration: none;
+}
+
+.entries {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1.1rem;
+  width: min(100% - 3rem, 88rem);
+  margin: 0 auto;
+  padding: clamp(2rem, 5vh, 3.5rem) 0 clamp(4.5rem, 10vh, 7rem);
+}
+
+.entry {
+  display: block;
+  min-width: 0;
+  min-height: 10.5rem;
+  padding: 1.35rem 1.25rem 1.1rem;
+  text-decoration: none;
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    translate 180ms ease;
+}
+
+.entry:hover {
+  border-color: rgb(232 236 244 / 44%);
+  background: rgb(12 16 24 / 88%);
+  translate: 0 -0.2rem;
+}
+
+.entry strong {
+  display: block;
+  margin: 0.8rem 0 0;
+  color: #f2f4f8;
+  font-family: 'Songti SC', SimSun, Georgia, serif;
+  font-size: 1.15rem;
+  letter-spacing: 0.08em;
+}
+
+.entryDescription {
+  display: -webkit-box;
+  margin-top: 0.75rem;
+  overflow: hidden;
+  color: var(--home-muted);
+  font-size: 0.82rem;
+  line-height: 1.7;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.lowerDeck {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(22rem, 0.8fr);
+  align-items: start;
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+  width: min(100% - 3rem, 76rem);
+  margin: 0 auto;
+  padding-block: 2rem clamp(5rem, 10vh, 8rem);
+}
+
+.richText,
+.contactSection {
+  padding: clamp(1.4rem, 4vw, 2.4rem);
+  background: var(--home-panel-strong);
+}
+
+.richText {
+  color: #d8dde7;
+  font-size: clamp(0.98rem, 1.5vw, 1.08rem);
+}
+
+.richText > :first-child:not(.sectionKicker) {
+  margin-top: 0;
+}
+
+.richText :global(h2),
+.richText :global(h3) {
+  color: #f0f2f6;
+  font-family: 'Songti SC', SimSun, Georgia, serif;
+}
+
+.richText :global(a) {
+  color: #b8cfdf;
+}
+
+.richText :global(blockquote) {
+  color: #c7ced9;
+  background: rgb(232 236 244 / 7%);
+  border-left-color: var(--home-brass);
+}
+
+.richText :global(code) {
+  color: #eef1f7;
+  background: rgb(232 236 244 / 10%);
+}
+
+.sectionKicker {
+  margin-bottom: 1.2rem;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.3rem;
+}
+
+.sectionHeading h2 {
+  margin: 0.35rem 0 0;
+  color: #f2f4f8;
+  font-family: 'Songti SC', SimSun, Georgia, serif;
+  font-size: clamp(1.45rem, 3vw, 2rem);
+  line-height: 1.2;
+  letter-spacing: 0.06em;
+}
+
+.sectionHeading > a {
+  color: #b8cfdf;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.contactList {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.contactList li {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid rgb(232 236 244 / 10%);
+  background: rgb(232 236 244 / 4%);
+}
+
+.contactList li > :first-child {
+  color: var(--home-muted);
+  font-size: 0.72rem;
+}
+
+.contactList a,
+.contactValue {
+  overflow-wrap: anywhere;
+  color: #dce5ee;
+  user-select: text;
+}
+
+.sectionState {
+  margin: 1rem 0 0;
+  padding: 1rem;
+  border: 1px solid rgb(232 236 244 / 10%);
+  color: var(--home-muted);
+  background: rgb(232 236 244 / 4%);
+}
+
+.sectionState p {
+  margin: 0;
+}
+
+.sectionState p + p {
+  margin-top: 0.5rem;
+}
+
+.footerMark {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  width: min(100% - 3rem, 88rem);
+  margin-inline: auto;
+  padding: 1.25rem 0 2rem;
+  border-top: 1px solid rgb(232 236 244 / 12%);
+  color: rgb(232 236 244 / 42%);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+}
+
+.statusLayout {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.statusPanel {
+  width: min(100%, 42rem);
+  padding: clamp(1.6rem, 5vw, 3rem);
+  background: var(--home-panel-strong);
+}
+
+.statusPanel h1 {
+  margin: 1rem 0 0.8rem;
+  font-family: 'Songti SC', SimSun, Georgia, serif;
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  line-height: 1.15;
+}
+
+.statusPanel > p:not(.eyebrow) {
+  color: #c5ccd7;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    translate: 0 1rem;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes drawRule {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.masthead > *,
+.bulletin,
+.entry {
+  animation: rise 800ms cubic-bezier(0.22, 0.8, 0.36, 1) backwards;
+}
+
+.masthead > :nth-child(1) {
+  animation-delay: 900ms;
+}
+
+.masthead > :nth-child(2) {
+  animation-delay: 1020ms;
+}
+
+.masthead > :nth-child(3) {
+  animation-delay: 1140ms;
+}
+
+.masthead > :nth-child(4),
+.bulletin {
+  animation-delay: 1260ms;
+}
+
+.entry:nth-child(1) {
+  animation-delay: 1440ms;
+}
+
+.entry:nth-child(2) {
+  animation-delay: 1510ms;
+}
+
+.entry:nth-child(3) {
+  animation-delay: 1580ms;
+}
+
+.entry:nth-child(4) {
+  animation-delay: 1650ms;
+}
+
+.entry:nth-child(5) {
+  animation-delay: 1720ms;
+}
+
+.bulletin > .rule,
+.entry > .rule {
+  animation: drawRule 700ms cubic-bezier(0.22, 0.8, 0.36, 1) 1550ms backwards;
+}
+
+@media (max-width: 74rem) {
+  .entries {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .entry:nth-child(4),
+  .entry:nth-child(5) {
+    min-height: 9.5rem;
+  }
+}
+
+@media (max-width: 62rem) {
+  .hero {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    padding-top: 6rem;
+  }
+
+  .masthead,
+  .bulletin {
+    max-width: none;
+  }
+
+  .bulletin {
+    justify-self: stretch;
+  }
+
+  .lowerDeck {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 44rem) {
+  .hero {
+    gap: 2.25rem;
+    padding: 5rem 1.25rem 3rem;
+  }
+
+  .masthead h1 {
+    font-size: clamp(2.8rem, 15vw, 4.4rem);
+    letter-spacing: 0.08em;
+  }
+
+  .entries,
+  .lowerDeck,
+  .footerMark {
+    width: min(100% - 2rem, 36rem);
+  }
+
+  .entries {
+    grid-template-columns: 1fr;
+    gap: 0.85rem;
+  }
+
+  .entry,
+  .entry:nth-child(4),
+  .entry:nth-child(5) {
+    min-height: 0;
+  }
+
+  .announcementList a {
+    grid-template-columns: 1fr;
+    gap: 0.3rem;
+  }
+
+  .sectionHeading {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .footerMark span:last-child {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .masthead > *,
+  .bulletin,
+  .entry,
+  .bulletin > .rule,
+  .entry > .rule {
+    animation: none;
+  }
+
+  .entry {
+    transition: none;
+  }
+
+  .entry:hover {
+    translate: none;
+  }
+
+  .lamp {
+    display: none;
+  }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .bulletin,
+  .entry,
+  .richText,
+  .contactSection,
+  .statusPanel {
+    background: rgb(8 11 17 / 96%);
+  }
+}
