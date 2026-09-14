@@ -608,6 +608,26 @@ body:has(.announcement-loading) {
   color: var(--announcement-copy);
 }
 
+.announcement-detail-heading,
+.announcement-detail-content {
+  padding-block: clamp(2rem, 5vw, 4rem);
+}
+
+.announcement-detail-heading h1 {
+  margin-block: 1.5rem;
+  color: var(--announcement-ink);
+  font-size: clamp(2rem, 5vw, 4rem);
+  line-height: 1.25;
+}
+
+.announcement-detail-heading time {
+  color: var(--announcement-muted);
+}
+
+.announcement-detail-content .announcement-body {
+  max-width: 48rem;
+}
+
 .announcement-body > :first-child,
 .announcement-inline-state > :first-child {
   margin-top: 0;
@@ -806,12 +826,15 @@ body:has(.announcement-loading) {
   grid-column: 2;
 }
 
+.announcement-state h2,
 .announcement-state p {
   margin: 0;
   color: var(--announcement-copy);
   font-size: 1.125rem;
+  font-weight: 400;
 }
 
+.announcement-state h2 + p,
 .announcement-state p + p {
   margin-top: 0.5rem;
   color: var(--announcement-faint);

@@ -5,6 +5,19 @@ import { getPayload } from 'payload'
 import config from '../src/payload.config'
 import { hashFormSchema } from '../src/modules/recruitment/form-schema/schema-hash'
 
+const databaseUrl = new URL(process.env.DATABASE_URL ?? '')
+if (
+  !['postgres:', 'postgresql:'].includes(databaseUrl.protocol) ||
+  !['127.0.0.1', 'localhost'].includes(databaseUrl.hostname) ||
+  !['/ascnucc_demo_test', '/ascnucc_demo_migration'].includes(
+    databaseUrl.pathname,
+  )
+) {
+  throw new Error(
+    'Migration fixtures require a dedicated local test or migration database',
+  )
+}
+
 const payload = await getPayload({ config })
 
 const existingCycle = await payload.find({

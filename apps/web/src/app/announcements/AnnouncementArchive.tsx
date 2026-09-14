@@ -230,7 +230,10 @@ export function AnnouncementArchive({
                     </time>
                   </div>
 
-                  <h2 className="announcement-item-main">
+                  <h2
+                    aria-label={item.title}
+                    className="announcement-item-main"
+                  >
                     <button
                       aria-controls={bodyId}
                       aria-expanded={isOpen}

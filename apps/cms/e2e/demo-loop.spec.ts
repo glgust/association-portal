@@ -73,7 +73,7 @@ test('dynamic submit → forbidden staff review → cadre approval → shared Ad
     adminPage.getByRole('heading', { name: '入会申请审核 Demo' }),
   ).toBeVisible()
   await adminPage.goto(`${cmsUrl}/admin/collections/demo-pages`)
-  await expect(adminPage.getByText('Demo Pages').first()).toBeVisible()
+  await expect(adminPage.getByText('Demo 页面').first()).toBeVisible()
 
   await Promise.all([
     staff.context.dispose(),

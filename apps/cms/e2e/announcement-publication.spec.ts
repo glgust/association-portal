@@ -153,7 +153,7 @@ async function loginThroughAdmin(adminPage: Page): Promise<void> {
       response.request().method() === 'POST'
     )
   })
-  await adminPage.getByRole('button', { exact: true, name: 'Login' }).click()
+  await adminPage.getByRole('button', { name: /^(登录|Login)$/ }).click()
   const loginResponse = await loginResponsePromise
   expect(loginResponse.ok(), await loginResponse.text()).toBe(true)
   await expect(adminPage).toHaveURL(/\/admin(?:\/|$)/)
@@ -317,7 +317,7 @@ test('an out-of-range announcement page shows the empty state', async ({
 }) => {
   await page.goto('/announcements?page=999')
   await expect(
-    page.getByRole('heading', { name: '暂时没有公告' }),
+    page.getByRole('heading', { name: '暂无公开公告' }),
   ).toBeVisible()
-  await expect(page.getByText('新公告发布后会显示在这里。')).toBeVisible()
+  await expect(page.getByText('新的通知发布后会出现在这里。')).toBeVisible()
 })

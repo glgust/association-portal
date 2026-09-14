@@ -7,8 +7,18 @@ import {
   type Response,
 } from '@playwright/test'
 import { randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 
 const cmsUrl = process.env.PLAYWRIGHT_CMS_SERVER_URL ?? 'http://127.0.0.1:3201'
+
+test.beforeAll(() => {
+  // This scenario creates all three unique page identities from an empty state.
+  // The seed helper checks that both the database and media root are E2E-only.
+  execFileSync(process.execPath, ['--import', 'tsx', 'scripts/seed-e2e.ts'], {
+    env: { ...process.env, E2E_CLEAR_CONTENT_ONLY: 'true' },
+    stdio: 'inherit',
+  })
+})
 
 type PageDocument = { _status?: 'draft' | 'published'; id: string }
 

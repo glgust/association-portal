@@ -48,7 +48,10 @@ DATABASE_URL=postgres://ascnucc_demo:ascnucc_demo@127.0.0.1:5432/ascnucc_demo_mi
 pnpm --dir apps/cms exec playwright install chromium
 pnpm build
 pnpm --dir apps/cms test:e2e
+PLAYWRIGHT_EXPECT_UNAVAILABLE=true PLAYWRIGHT_CMS_API_URL=http://127.0.0.1:39999 pnpm --dir apps/cms test:e2e '.*-unavailable.spec.ts'
 ```
+
+正常服务测试和服务不可用测试分开执行；后者只运行三个不可用场景。协会页面测试会清理虚构内容并重新建立三个固定页面，因此只允许使用专用测试数据库。
 
 本地媒体目录必须是系统临时目录下的 `ascnucc-media-e2e`，测试配置会拒绝其他目录。
 

@@ -42,10 +42,16 @@ jobs:
       - run: pnpm check
       - run: sh scripts/verify-deploy-tool.sh
       - run: pnpm --dir apps/cms migrate
+      - run: pnpm --dir apps/cms seed:migration-fixture
       - run: pnpm --dir apps/cms seed:e2e
       - run: pnpm build
       - run: pnpm --dir apps/cms exec playwright install --with-deps chromium
       - run: pnpm --dir apps/cms test:e2e
+      - name: Verify unavailable public services
+        env:
+          PLAYWRIGHT_EXPECT_UNAVAILABLE: 'true'
+          PLAYWRIGHT_CMS_API_URL: http://127.0.0.1:39999
+        run: pnpm --dir apps/cms test:e2e '.*-unavailable.spec.ts'
 
   first-test-release:
     name: Publish the first test release

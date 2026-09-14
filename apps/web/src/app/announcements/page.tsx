@@ -92,7 +92,7 @@ function AnnouncementState({
         <section className="announcement-state" role="status">
           <span>——</span>
           <div>
-            <p>{title}</p>
+            <h2>{title}</h2>
             <p>{description}</p>
             {requestId ? <p>请求编号：{requestId}</p> : null}
           </div>

@@ -19,6 +19,8 @@ import styles from './home.module.css'
 
 const siteDescription = '示例协会的信息与服务门户。'
 
+export const dynamic = 'force-dynamic'
+
 export async function generateMetadata(): Promise<Metadata> {
   try {
     const home = await getPublicHomePage()
@@ -137,7 +139,12 @@ function HomeEntry({
   title: string
 }) {
   return (
-    <Link className={styles.entry} href={href} prefetch={false}>
+    <Link
+      aria-label={title}
+      className={styles.entry}
+      href={href}
+      prefetch={false}
+    >
       <span className={styles.entryTag}>
         {index} · {label}
       </span>
